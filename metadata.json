@@ -1,0 +1,6 @@
+{
+  "name": "Chromatic Skeleton Pose Studio",
+  "description": "Professional 3D articulated mirror-chrome skeleton pose studio with customizable iridescent finishes, natural-language AI posing, multi-figure composition, and studio lighting.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
