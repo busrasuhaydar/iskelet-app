@@ -21,8 +21,8 @@ export interface ModelInspectionStats {
 export interface CustomModelOptions {
   name: string;
   applyChromeMaterial: boolean;
-  normalizeHeight: boolean;
-  centerOrigin: boolean;
+  normalizeHeight?: boolean;
+  centerOrigin?: boolean;
   replaceTargetId?: string | null;
   materialPresetKey?: string;
 }

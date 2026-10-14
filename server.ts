@@ -1,15 +1,17 @@
 import 'dotenv/config';
-import express from 'express';
-import { createServer as createViteServer } from 'vite';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import express from 'express';
+import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = 3000;
+const isProduction = process.env.NODE_ENV === 'production';
+const PORT = isProduction ? (process.env.PORT ? parseInt(process.env.PORT, 10) : 8080) : 3000;
 
 app.use(express.json({ limit: '10mb' }));
 
@@ -137,6 +139,221 @@ app.get('/api/health', (_req, res) => {
     status: 'ok',
     aiConfigured: Boolean(aiClient),
     timestamp: new Date().toISOString(),
+  });
+});
+
+// ==========================================
+// GOOGLE DRIVE GLTF SKELETON INTEGRATION
+// ==========================================
+function extractDriveFileId(input: string): string | null {
+  if (!input) return null;
+  const trimmed = input.trim();
+  const fileDMatch = trimmed.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+  if (fileDMatch) return fileDMatch[1];
+  const dMatch = trimmed.match(/\/d\/([a-zA-Z0-9_-]+)/);
+  if (dMatch) return dMatch[1];
+  const idMatch = trimmed.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  if (idMatch) return idMatch[1];
+  if (/^[a-zA-Z0-9_-]{20,50}$/.test(trimmed)) {
+    return trimmed;
+  }
+  return null;
+}
+
+async function downloadGoogleDriveFile(fileId: string): Promise<Buffer> {
+  const directUrls = [
+    `https://drive.usercontent.google.com/download?id=${fileId}&export=download&authuser=0&confirm=t`,
+    `https://drive.google.com/uc?export=download&id=${fileId}&confirm=t`,
+    `https://docs.google.com/uc?export=download&id=${fileId}`,
+  ];
+
+  for (const targetUrl of directUrls) {
+    try {
+      const response = await fetch(targetUrl, {
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          Accept: '*/*',
+        },
+        redirect: 'follow',
+      });
+
+      if (!response.ok) {
+        continue;
+      }
+
+      const contentType = response.headers.get('content-type') || '';
+      if (contentType.includes('text/html')) {
+        const html = await response.text();
+        const confirmMatch =
+          html.match(/confirm=([0-9A-Za-z_-]+)/) ||
+          html.match(/name="confirm"\s+value="([^"]+)"/) ||
+          html.match(/id="confirm"[^>]*value="([^"]+)"/);
+
+        if (confirmMatch) {
+          const confirmToken = confirmMatch[1];
+          const confirmUrl = `https://drive.google.com/uc?export=download&id=${fileId}&confirm=${confirmToken}`;
+          const confirmRes = await fetch(confirmUrl, {
+            headers: {
+              'User-Agent':
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            },
+            redirect: 'follow',
+          });
+          if (confirmRes.ok && !confirmRes.headers.get('content-type')?.includes('text/html')) {
+            const arr = await confirmRes.arrayBuffer();
+            return Buffer.from(arr);
+          }
+        }
+        continue;
+      }
+
+      const arrayBuffer = await response.arrayBuffer();
+      if (arrayBuffer.byteLength > 1000) {
+        return Buffer.from(arrayBuffer);
+      }
+    } catch (err) {
+      console.warn(`Attempt with ${targetUrl} failed:`, err);
+    }
+  }
+
+  throw new Error(`Google Drive download failed for file ${fileId}`);
+}
+
+const CONFIG_FILE_PATH = path.resolve(__dirname, 'drive-config.json');
+const MODEL_CACHE_DIR = path.resolve(__dirname, 'public', 'models');
+const MODEL_CACHE_PATH = path.resolve(MODEL_CACHE_DIR, 'main_skeleton.glb');
+
+if (!fs.existsSync(MODEL_CACHE_DIR)) {
+  fs.mkdirSync(MODEL_CACHE_DIR, { recursive: true });
+}
+
+function getResolvedModelPath(): string | null {
+  if (fs.existsSync(MODEL_CACHE_PATH)) return MODEL_CACHE_PATH;
+  const distModel = path.resolve(__dirname, 'dist', 'models', 'main_skeleton.glb');
+  if (fs.existsSync(distModel)) return distModel;
+  return null;
+}
+
+function getStoredDriveConfig() {
+  try {
+    if (fs.existsSync(CONFIG_FILE_PATH)) {
+      return JSON.parse(fs.readFileSync(CONFIG_FILE_PATH, 'utf-8'));
+    }
+  } catch (e) {
+    console.error('Error reading drive-config.json:', e);
+  }
+  return {
+    driveUrl: process.env.GOOGLE_DRIVE_MODEL_URL || '',
+    modelName: 'Skeleton (Diego Luján García)',
+    author: 'Diego Luján García',
+    source: 'https://sketchfab.com/3d-models/skeleton-4de7b96a351a4a35b1b6e5415277ff07',
+    license: 'CC-BY-4.0',
+    lastUpdated: null,
+  };
+}
+
+function saveStoredDriveConfig(config: any) {
+  try {
+    fs.writeFileSync(CONFIG_FILE_PATH, JSON.stringify(config, null, 2), 'utf-8');
+  } catch (e) {
+    console.error('Error saving drive-config.json:', e);
+  }
+}
+
+// 1. Get Drive Config & Status
+app.get('/api/drive-config', (_req, res) => {
+  const config = getStoredDriveConfig();
+  const cachedPath = getResolvedModelPath();
+  const hasCachedModel = Boolean(cachedPath);
+  let fileSize = 0;
+  if (cachedPath) {
+    try {
+      fileSize = fs.statSync(cachedPath).size;
+    } catch {}
+  }
+
+  res.json({
+    configured: Boolean(config.driveUrl || hasCachedModel),
+    driveUrl: config.driveUrl || '',
+    hasCachedModel,
+    fileSize,
+    fileSizeFormatted: fileSize ? `${(fileSize / (1024 * 1024)).toFixed(2)} MB` : null,
+    modelName: config.modelName,
+    author: config.author,
+    license: config.license,
+    source: config.source,
+  });
+});
+
+// 2. Set/Update Drive URL and trigger download & caching
+app.post('/api/drive-config', async (req, res) => {
+  const { driveUrl } = req.body;
+  if (!driveUrl || typeof driveUrl !== 'string') {
+    return res.status(400).json({ error: 'driveUrl is required' });
+  }
+
+  const fileId = extractDriveFileId(driveUrl);
+  if (!fileId) {
+    return res.status(400).json({
+      error: 'Geçersiz Google Drive linki. Lütfen geçerli bir Google Drive paylaşım linki veya dosya ID girin.',
+    });
+  }
+
+  try {
+    console.log(`Downloading model from Google Drive (ID: ${fileId})...`);
+    const buffer = await downloadGoogleDriveFile(fileId);
+
+    fs.writeFileSync(MODEL_CACHE_PATH, buffer);
+    const config = getStoredDriveConfig();
+    config.driveUrl = driveUrl;
+    config.lastUpdated = new Date().toISOString();
+    saveStoredDriveConfig(config);
+
+    console.log(`Model successfully cached: ${buffer.length} bytes`);
+    return res.json({
+      success: true,
+      message: 'Google Drive iskelet modeli başarıyla indirildi ve ana iskelet olarak ayarlandı.',
+      fileSize: buffer.length,
+      fileSizeFormatted: `${(buffer.length / (1024 * 1024)).toFixed(2)} MB`,
+    });
+  } catch (err: any) {
+    console.error('Failed to download Google Drive model:', err);
+    return res.status(500).json({
+      error: err.message || 'Google Drive indirme işlemi başarısız oldu.',
+    });
+  }
+});
+
+// 3. Serve the cached Drive model binary directly
+app.get('/api/drive-model', async (_req, res) => {
+  const cachedPath = getResolvedModelPath();
+  if (cachedPath) {
+    res.setHeader('Content-Type', 'model/gltf-binary');
+    res.setHeader('Content-Disposition', 'inline; filename="main_skeleton.glb"');
+    const readStream = fs.createReadStream(cachedPath);
+    return readStream.pipe(res);
+  }
+
+  // If not cached yet, check if a driveUrl is configured
+  const config = getStoredDriveConfig();
+  if (config.driveUrl) {
+    const fileId = extractDriveFileId(config.driveUrl);
+    if (fileId) {
+      try {
+        const buffer = await downloadGoogleDriveFile(fileId);
+        fs.writeFileSync(MODEL_CACHE_PATH, buffer);
+        res.setHeader('Content-Type', 'model/gltf-binary');
+        return res.send(buffer);
+      } catch (err: any) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+  }
+
+  return res.status(404).json({
+    error: 'Henüz bir Google Drive iskelet modeli bağlanmadı.',
+    isConfigured: false,
   });
 });
 

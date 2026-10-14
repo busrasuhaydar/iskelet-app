@@ -8,7 +8,7 @@ import {
   MaterialSettings,
   SkeletonFigureData,
 } from '../types/skeleton';
-import { CustomModelRigAdapter } from './CustomModelRigAdapter';
+import { setupAnatomicalModelRig } from './anatomicalModelRig';
 
 export interface IKTargetHandles {
   hand_L: THREE.Group;
@@ -16,6 +16,111 @@ export interface IKTargetHandles {
   foot_L: THREE.Group;
   foot_R: THREE.Group;
   head_look: THREE.Group;
+}
+
+export interface GLTFBoneItem {
+  name: string;
+  node: THREE.Object3D;
+  matchedKey?: JointKey;
+  label: string;
+  category: string;
+}
+
+export function matchBoneNameToJointKey(name: string): JointKey | null {
+  const n = name.toLowerCase().replace(/[-_.]/g, ' ');
+
+  const isLeft =
+    /\b(l|left|izq|izquierdo|leftarm|leftleg)\b/i.test(n) ||
+    n.endsWith(' l') ||
+    n.includes('.l') ||
+    n.includes('_l');
+  const isRight =
+    /\b(r|right|der|derecho|rightarm|rightleg)\b/i.test(n) ||
+    n.endsWith(' r') ||
+    n.includes('.r') ||
+    n.includes('_r');
+
+  // Pelvis / Hips
+  if (/pelvis|hips|root|sacrum|cintura|cadera/i.test(n)) return 'pelvis';
+  // Head / Cranium
+  if (/head|skull|cranium|cabeza/i.test(n)) return 'head';
+  // Jaw
+  if (/jaw|mandible|mandibula/i.test(n)) return 'jaw';
+  // Spine
+  if (/neck|cervical|cuello/i.test(n)) return 'spine_cervical';
+  if (/chest|upper.*spine|spine.*2|spine.*3|thoracic|pecho|torso/i.test(n))
+    return 'spine_thoracic';
+  if (/spine|lumbar|columna/i.test(n)) return 'spine_lumbar';
+
+  // Left Arm
+  if (isLeft) {
+    if (/clavicle|collar|scapula/i.test(n)) return 'clavicle_L';
+    if (/shoulder|upper.*arm|humerus|arm/i.test(n) && !/forearm|lower/i.test(n))
+      return 'shoulder_L';
+    if (/forearm|lower.*arm|elbow|radius|ulna/i.test(n)) return 'lower_arm_L';
+    if (/wrist|hand/i.test(n) && !/thumb|index|middle|ring|pinky/i.test(n))
+      return 'wrist_L';
+    if (/thumb/i.test(n)) return 'thumb_L';
+    if (/index/i.test(n)) return 'index_L';
+    if (/middle/i.test(n)) return 'middle_L';
+    if (/ring/i.test(n)) return 'ring_L';
+    if (/pinky|little/i.test(n)) return 'pinky_L';
+
+    // Left Leg
+    if (/thigh|upper.*leg|femur|hip/i.test(n)) return 'hip_L';
+    if (/shin|calf|lower.*leg|knee|tibia|fibula/i.test(n)) return 'knee_L';
+    if (/foot|ankle/i.test(n) && !/toe/i.test(n)) return 'ankle_L';
+    if (/toe/i.test(n)) return 'toes_L';
+  }
+
+  // Right Arm
+  if (isRight) {
+    if (/clavicle|collar|scapula/i.test(n)) return 'clavicle_R';
+    if (/shoulder|upper.*arm|humerus|arm/i.test(n) && !/forearm|lower/i.test(n))
+      return 'shoulder_R';
+    if (/forearm|lower.*arm|elbow|radius|ulna/i.test(n)) return 'lower_arm_R';
+    if (/wrist|hand/i.test(n) && !/thumb|index|middle|ring|pinky/i.test(n))
+      return 'wrist_R';
+    if (/thumb/i.test(n)) return 'thumb_R';
+    if (/index/i.test(n)) return 'index_R';
+    if (/middle/i.test(n)) return 'middle_R';
+    if (/ring/i.test(n)) return 'ring_R';
+    if (/pinky|little/i.test(n)) return 'pinky_R';
+
+    // Right Leg
+    if (/thigh|upper.*leg|femur|hip/i.test(n)) return 'hip_R';
+    if (/shin|calf|lower.*leg|knee|tibia|fibula/i.test(n)) return 'knee_R';
+    if (/foot|ankle/i.test(n) && !/toe/i.test(n)) return 'ankle_R';
+    if (/toe/i.test(n)) return 'toes_R';
+  }
+
+  return null;
+}
+
+export function formatBoneLabel(name: string): string {
+  return name
+    .replace(/^mixamorig[._:]?/i, '')
+    .replace(/^bip01[._:]?/i, '')
+    .replace(/[-_.]/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+export function determineBoneCategory(name: string, matchedKey?: JointKey | null): string {
+  if (matchedKey) {
+    const def = ANATOMICAL_JOINTS[matchedKey];
+    if (def) return def.category;
+  }
+  const n = name.toLowerCase();
+  if (/arm|hand|finger|wrist|shoulder|clavicle|elbow|radius|ulna/i.test(n)) {
+    return n.includes('l') || n.includes('left') ? 'arm_L' : 'arm_R';
+  }
+  if (/leg|foot|toe|thigh|shin|knee|femur|tibia/i.test(n)) {
+    return n.includes('l') || n.includes('left') ? 'leg_L' : 'leg_R';
+  }
+  if (/head|skull|jaw|mandible|teeth|face|eye/i.test(n)) return 'head';
+  if (/spine|rib|vertebra|chest|pelvis|hip/i.test(n)) return 'spine';
+  return 'other';
 }
 
 export class SkeletonRig {
@@ -35,8 +140,15 @@ export class SkeletonRig {
   private selectionHelper: THREE.Mesh | null = null;
   public customModelGroup: THREE.Group | null = null;
   public isCustomModel: boolean = false;
-  public rigAdapter: CustomModelRigAdapter | null = null;
   public currentMaterialSettings: MaterialSettings;
+
+  public gltfBones: Map<string, THREE.Object3D> = new Map();
+  public gltfBoneList: GLTFBoneItem[] = [];
+  public jointKeyToGLTFBone: Map<JointKey, THREE.Object3D> = new Map();
+  public boneNameToJointKey: Map<string, JointKey> = new Map();
+  public customBoneRotations: Map<string, EulerDegrees> = new Map();
+  public selectedBoneName: string | null = null;
+  public selectedBoneNode: THREE.Object3D | null = null;
 
   constructor(data: SkeletonFigureData) {
     this.id = data.id;
@@ -89,7 +201,7 @@ export class SkeletonRig {
   // ==========================================
 
   public setJointRotation(key: JointKey, angles: EulerDegrees, clampLimits = this.enforceJointLimits) {
-    const jointGroup = this.nodes.jointGroups[key];
+    const jointGroup = this.getJointGroup(key);
     if (!jointGroup) return;
 
     let { x, y, z } = angles;
@@ -105,22 +217,19 @@ export class SkeletonRig {
 
     this.currentPose.joints[key] = { x, y, z };
 
-    // Convert degrees to radians for Three.js
-    // For elbows (lower_arm) and wrists, anatomical flexion (x > 0) bends the limb FORWARD towards chest (+Z)
-    const radX =
-      key === 'lower_arm_L' || key === 'lower_arm_R' || key === 'wrist_L' || key === 'wrist_R'
-        ? -THREE.MathUtils.degToRad(x)
-        : THREE.MathUtils.degToRad(x);
-
     jointGroup.rotation.set(
-      radX,
+      THREE.MathUtils.degToRad(x),
       THREE.MathUtils.degToRad(y),
       THREE.MathUtils.degToRad(z)
     );
 
-    // Propagate rotation to custom GLTF model adapter if present
-    if (this.rigAdapter) {
-      this.rigAdapter.applyJointRotation(key, { x, y, z });
+    // Also update procedural node if custom model is active
+    if (this.isCustomModel && this.nodes.jointGroups[key]) {
+      this.nodes.jointGroups[key].rotation.set(
+        THREE.MathUtils.degToRad(x),
+        THREE.MathUtils.degToRad(y),
+        THREE.MathUtils.degToRad(z)
+      );
     }
 
     if (this.selectedJointKey === key && this.selectionHelper) {
@@ -133,9 +242,8 @@ export class SkeletonRig {
   }
 
   public getJointGroup(key: JointKey): THREE.Group | undefined {
-    if (this.rigAdapter) {
-      const target = this.rigAdapter.getTargetObject(key);
-      if (target) return target as THREE.Group;
+    if (this.isCustomModel && this.jointKeyToGLTFBone.has(key)) {
+      return this.jointKeyToGLTFBone.get(key) as THREE.Group;
     }
     return this.nodes.jointGroups[key];
   }
@@ -304,41 +412,101 @@ export class SkeletonRig {
       this.name = options.customName;
     }
 
-    // Hide procedural bones meshes so custom model takes center stage
-    Object.values(this.nodes.jointGroups).forEach((jg) => {
-      jg.children.forEach((child) => {
-        if ((child as any).isMesh && (child.userData as any)?.isBone) {
-          child.visible = false;
-        }
-      });
-    });
+    // Remove all previous procedural children from root so no duplicate bodies or phantom hitboxes exist
+    while (this.nodes.root.children.length > 0) {
+      this.nodes.root.remove(this.nodes.root.children[0]);
+    }
+    if (this.selectionHelper) {
+      this.nodes.root.add(this.selectionHelper);
+    }
+
+    // Reset articulation maps
+    this.customBoneRotations.clear();
+
+    // Build anatomical pivots, bone hierarchy and material assignment
+    const rigResult = setupAnatomicalModelRig(
+      modelGroup,
+      this.id,
+      this.material,
+      options.applyChromeMaterial !== false
+    );
+
+    this.gltfBones = rigResult.bones;
+    this.gltfBoneList = rigResult.boneList;
+    this.nodes.boneMeshes = rigResult.boneMeshes;
+    this.jointKeyToGLTFBone = rigResult.jointKeyToBone;
+    this.boneNameToJointKey = rigResult.boneNameToJointKey;
 
     // Add custom model group to figure root
     this.nodes.root.add(modelGroup);
 
-    // Initialize smart custom model rig adapter
-    this.rigAdapter = new CustomModelRigAdapter(modelGroup, this.nodes.jointGroups, this.id);
+    // Apply current pose to the newly rigged bones
+    this.applyPose(this.currentPose);
+  }
 
-    // Apply materials
-    this.rigAdapter.candidateMeshes.forEach((mesh) => {
-      if (options.applyChromeMaterial !== false) {
-        (mesh as any).isChromeMesh = true;
-        mesh.material = this.material;
-      } else {
-        (mesh as any).isChromeMesh = false;
-      }
-    });
+  public selectBoneByName(name: string | null) {
+    this.selectedBoneName = name;
+    if (!name) {
+      this.selectedBoneNode = null;
+      this.selectJoint(null);
+      return;
+    }
 
-    // Expose all meshes to picking
-    this.nodes.boneMeshes = [...this.rigAdapter.candidateMeshes];
+    const node = this.gltfBones.get(name) || null;
+    this.selectedBoneNode = node;
 
-    // Re-apply any existing active pose so custom model immediately poses!
-    if (this.currentPose.joints) {
-      Object.entries(this.currentPose.joints).forEach(([key, rot]) => {
-        if (rot) {
-          this.rigAdapter?.applyJointRotation(key as JointKey, rot);
-        }
-      });
+    const matchedKey = this.boneNameToJointKey.get(name);
+    if (matchedKey) {
+      this.selectedJointKey = matchedKey;
+    } else {
+      this.selectedJointKey = null;
+    }
+
+    if (this.selectionHelper && node) {
+      this.selectionHelper.visible = true;
+      const worldPos = new THREE.Vector3();
+      node.getWorldPosition(worldPos);
+      this.nodes.root.worldToLocal(worldPos);
+      this.selectionHelper.position.copy(worldPos);
+    }
+  }
+
+  public setBoneRotation(boneName: string, angles: EulerDegrees) {
+    const node = this.gltfBones.get(boneName);
+    if (!node) return;
+
+    node.rotation.set(
+      THREE.MathUtils.degToRad(angles.x),
+      THREE.MathUtils.degToRad(angles.y),
+      THREE.MathUtils.degToRad(angles.z)
+    );
+
+    this.customBoneRotations.set(boneName, { ...angles });
+
+    const matchedKey = this.boneNameToJointKey.get(boneName);
+    if (matchedKey) {
+      this.currentPose.joints[matchedKey] = { ...angles };
+    }
+  }
+
+  public getBoneRotation(boneName: string): EulerDegrees {
+    const node = this.gltfBones.get(boneName);
+    if (!node) return { x: 0, y: 0, z: 0 };
+    return {
+      x: Math.round(THREE.MathUtils.radToDeg(node.rotation.x)),
+      y: Math.round(THREE.MathUtils.radToDeg(node.rotation.y)),
+      z: Math.round(THREE.MathUtils.radToDeg(node.rotation.z)),
+    };
+  }
+
+  public resetBoneRotation(boneName: string) {
+    const node = this.gltfBones.get(boneName);
+    if (!node) return;
+    node.rotation.set(0, 0, 0);
+    this.customBoneRotations.set(boneName, { x: 0, y: 0, z: 0 });
+    const matchedKey = this.boneNameToJointKey.get(boneName);
+    if (matchedKey) {
+      this.currentPose.joints[matchedKey] = { x: 0, y: 0, z: 0 };
     }
   }
 
@@ -347,12 +515,12 @@ export class SkeletonRig {
   // ==========================================
 
   private createSelectionHelper() {
-    const ringGeom = new THREE.TorusGeometry(0.045, 0.005, 12, 32);
+    const ringGeom = new THREE.TorusGeometry(0.065, 0.007, 16, 36);
     const ringMat = new THREE.MeshBasicMaterial({
-      color: 0x38bdf8,
+      color: 0x00f0ff,
       depthTest: false,
       transparent: true,
-      opacity: 0.9,
+      opacity: 0.95,
     });
     this.selectionHelper = new THREE.Mesh(ringGeom, ringMat);
     this.selectionHelper.renderOrder = 999;
@@ -377,12 +545,12 @@ export class SkeletonRig {
 
   private updateSelectionHelperPosition() {
     if (!this.selectedJointKey || !this.selectionHelper) return;
-    const targetObj = this.getJointGroup(this.selectedJointKey);
-    if (!targetObj) return;
+    const jointGroup = this.getJointGroup(this.selectedJointKey);
+    if (!jointGroup) return;
 
     // Get world position relative to root
     const worldPos = new THREE.Vector3();
-    targetObj.getWorldPosition(worldPos);
+    jointGroup.getWorldPosition(worldPos);
     this.nodes.root.worldToLocal(worldPos);
     this.selectionHelper.position.copy(worldPos);
   }

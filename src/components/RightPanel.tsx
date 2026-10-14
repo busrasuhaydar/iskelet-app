@@ -309,6 +309,64 @@ export const RightPanel: React.FC<RightPanelProps> = ({
                   </button>
                 </div>
               </div>
+            ) : activeRig?.selectedBoneName ? (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between pb-2 border-b border-white/10">
+                  <div>
+                    <h3 className="text-xs font-semibold text-slate-100">{activeRig.selectedBoneName}</h3>
+                    <div className="text-[10px] text-cyan-400">
+                      GLTF Model Kemiği · 3D Eksen Rotasyonu
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => {
+                      if (activeRig.selectedBoneName) {
+                        activeRig.resetBoneRotation(activeRig.selectedBoneName);
+                        onUpdateJointRotation('pelvis', { x: 0, y: 0, z: 0 });
+                      }
+                    }}
+                    title="Kemik Rotasyonunu Sıfırla"
+                    className="p-1 hover:text-rose-400 text-slate-400 transition-colors"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+
+                <div className="space-y-3">
+                  {(['x', 'y', 'z'] as const).map((axis) => {
+                    const rot = activeRig.getBoneRotation(activeRig.selectedBoneName!);
+                    const val = rot[axis];
+                    return (
+                      <div key={axis} className="space-y-1">
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="font-medium uppercase text-slate-300">
+                            {axis === 'x' ? 'Pitch (X)' : axis === 'y' ? 'Yaw (Y)' : 'Roll (Z)'}
+                          </span>
+                          <span className="font-mono text-cyan-400 tabular-nums text-[11px]">{val}°</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="range"
+                            min={-180}
+                            max={180}
+                            value={val}
+                            onChange={(e) => {
+                              const newRot = { ...rot, [axis]: Number(e.target.value) };
+                              activeRig.setBoneRotation(activeRig.selectedBoneName!, newRot);
+                              onUpdateJointRotation('pelvis', { x: 0, y: 0, z: 0 });
+                            }}
+                            className="flex-1 accent-cyan-400 h-1.5 bg-slate-800 rounded cursor-pointer"
+                          />
+                        </div>
+                        <div className="flex items-center justify-between text-[9px] text-slate-500 font-mono">
+                          <span>-180°</span>
+                          <span>180°</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
             ) : (
               <div className="space-y-4">
                 <div className="p-3 bg-white/5 rounded-lg border border-white/5 text-xs text-slate-400 space-y-2">

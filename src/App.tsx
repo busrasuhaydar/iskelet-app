@@ -14,12 +14,13 @@ import { CHROME_MATERIAL_PRESETS, DEFAULT_NEUTRAL_POSE } from './scene/jointDefi
 import { Header } from './components/Header';
 import { LeftPanel } from './components/LeftPanel';
 import { RightPanel } from './components/RightPanel';
-import { BottomAIPanel } from './components/BottomAIPanel';
+import { SkellyPoseBar } from './components/SkellyPoseBar';
 import { ViewportHUD } from './components/ViewportHUD';
 import { ExportModal } from './components/ExportModal';
 import { PoseLibraryModal } from './components/PoseLibraryModal';
 import { AcceptanceTestModal } from './components/AcceptanceTestModal';
 import { ImportModelModal } from './components/ImportModelModal';
+import { DriveModelConnector } from './components/DriveModelConnector';
 import { AcceptanceTestRunner } from './services/acceptanceTests';
 import { AIPoseSolver } from './services/aiPoseSolver';
 import { BUILTIN_POSE_TEMPLATES } from './services/poseLibrary';
@@ -75,6 +76,10 @@ export default function App() {
       onPoseChanged: () => {
         pushHistoryState();
       },
+      onTransformChanged: () => {
+        // Trigger React re-render so UI sliders track gizmo in real time
+        setFiguresList((prev) => [...prev]);
+      },
     });
 
     studioRef.current = studio;
@@ -84,7 +89,7 @@ export default function App() {
     // Create Initial Figure: Primary Mirror Chrome Skeleton
     const initialFigureData: SkeletonFigureData = {
       id: 'figure_1',
-      name: 'Chrome Skeleton 1 (Primary)',
+      name: 'Anatomik İskelet (Diego Luján García)',
       visible: true,
       locked: false,
       ikEnabled: false,
@@ -92,13 +97,39 @@ export default function App() {
       material: { ...CHROME_MATERIAL_PRESETS.pure_mirror },
       pose: {
         ...JSON.parse(JSON.stringify(DEFAULT_NEUTRAL_POSE)),
-        joints: { ...BUILTIN_POSE_TEMPLATES.contrapposto.joints },
+        joints: { ...DEFAULT_NEUTRAL_POSE.joints },
       },
     };
 
     const initialRig = studio.addFigure(initialFigureData);
     setFiguresList([initialRig]);
     setActiveFigureId(initialRig.id);
+
+    // Automatically load the high-fidelity Diego Luján García skeleton GLTF from storage/drive
+    fetch('/models/main_skeleton.glb')
+      .then((res) => {
+        if (!res.ok) return fetch('/api/drive-model');
+        return res;
+      })
+      .then((res) => {
+        if (!res.ok) throw new Error('Model fetch failed');
+        return res.arrayBuffer();
+      })
+      .then(async (arrayBuffer) => {
+        const { gltf } = await studio.loadGLTFFromArrayBuffer(arrayBuffer, 'main_skeleton.glb');
+        const modelGroup = gltf.scene || gltf.scenes?.[0];
+        if (modelGroup && studioRef.current) {
+          const mainRig = studio.replaceFigureWithCustomModel(initialRig.id, modelGroup, {
+            name: 'Anatomik İskelet (Diego Luján García)',
+            applyChromeMaterial: true,
+          });
+          setFiguresList([mainRig]);
+          setActiveFigureId(mainRig.id);
+        }
+      })
+      .catch((err) => {
+        console.warn('Auto-load of main skeleton fell back to built-in rig:', err);
+      });
 
     // Initial snapshot in history
     const initialSnapshot = captureSceneSnapshot(studio);
@@ -258,6 +289,7 @@ export default function App() {
     const rig = studioRef.current?.getActiveFigure();
     if (!rig) return;
     rig.setJointRotation(key, angles);
+    setFiguresList((prev) => [...prev]);
     pushHistoryState();
   };
 
@@ -265,6 +297,7 @@ export default function App() {
     const rig = studioRef.current?.getActiveFigure();
     if (!rig) return;
     rig.resetJoint(key);
+    setFiguresList((prev) => [...prev]);
     pushHistoryState();
   };
 
@@ -272,6 +305,7 @@ export default function App() {
     const rig = studioRef.current?.getActiveFigure();
     if (!rig) return;
     rig.resetLimb(category);
+    setFiguresList((prev) => [...prev]);
     pushHistoryState();
   };
 
@@ -279,6 +313,7 @@ export default function App() {
     const rig = studioRef.current?.getActiveFigure();
     if (!rig) return;
     rig.resetAllPose();
+    setFiguresList((prev) => [...prev]);
     pushHistoryState();
   };
 
@@ -286,6 +321,7 @@ export default function App() {
     const rig = studioRef.current?.getActiveFigure();
     if (!rig) return;
     rig.mirrorPose(fromSide);
+    setFiguresList((prev) => [...prev]);
     pushHistoryState();
   };
 
@@ -390,24 +426,16 @@ export default function App() {
       }
 
       const figs = Array.from(studioRef.current.figures.values());
-      const activeRig = studioRef.current.getActiveFigure();
 
       solution.figures.forEach((update) => {
-        // If single-figure request, prioritize the currently active selected figure (custom or procedural)
-        let targetRig: SkeletonRig | undefined;
-        if (solution.figures.length === 1 && activeRig) {
-          targetRig = activeRig;
-        } else {
-          targetRig = figs[update.figureIndex] || activeRig || figs[0];
-        }
-
+        const targetRig = figs[update.figureIndex] || figs[0];
         if (targetRig) {
           if (update.position) targetRig.setPosition(update.position);
           if (update.rotation) targetRig.setRotation(update.rotation);
           if (update.joints) {
             Object.entries(update.joints).forEach(([jKey, angles]) => {
               if (angles) {
-                targetRig!.setJointRotation(jKey as JointKey, angles);
+                targetRig.setJointRotation(jKey as JointKey, angles);
               }
             });
           }
@@ -421,6 +449,13 @@ export default function App() {
     } finally {
       setIsAILoading(false);
     }
+  };
+
+  const handleNudgeAngle = (axis: 'x' | 'y' | 'z', deltaDeg: number) => {
+    if (!activeRig || !selectedJointKey) return;
+    const current = activeRig.getJointRotation(selectedJointKey);
+    const newRot = { ...current, [axis]: current[axis] + deltaDeg };
+    handleUpdateJointRotation(selectedJointKey, newRot);
   };
 
   // ==========================================
@@ -471,6 +506,12 @@ export default function App() {
         onOpenImport={() => setIsImportOpen(true)}
       />
 
+      {/* Google Drive Automatic Skeleton Loader & Linker */}
+      <DriveModelConnector
+        studio={studioRef.current}
+        onModelLoaded={handleModelImported}
+      />
+
       {/* 2. Main Studio Workspace */}
       <div className="flex-1 flex overflow-hidden relative">
         {/* Left Drawer Toggle (Mobile) */}
@@ -507,6 +548,7 @@ export default function App() {
             onDuplicateFigure={handleDuplicateFigure}
             onRemoveFigure={handleRemoveFigure}
             onSelectJoint={handleSelectJoint}
+            onSelectBone={(bName) => studioRef.current?.selectBone(bName)}
             onToggleVisibility={handleToggleVisibility}
             onToggleLock={handleToggleLock}
             onToggleIK={handleToggleIK}
@@ -567,16 +609,21 @@ export default function App() {
         </div>
       </div>
 
-      {/* 3. Bottom Natural-Language AI Pose Generator */}
-      <BottomAIPanel
-        onGeneratePose={handleGeneratePose}
-        isLoading={isAILoading}
+      {/* 3. Bottom Skelly-Style Instant Posing Bar */}
+      <SkellyPoseBar
+        activeRig={activeRig}
+        selectedJointKey={selectedJointKey}
         canUndo={historyIndex > 0}
         canRedo={historyIndex < history.length - 1}
         onUndo={handleUndo}
         onRedo={handleRedo}
-        lastAIExplanation={lastAIExplanation}
-        lastAISource={lastAISource}
+        onApplyPoseTemplate={handleApplyPoseTemplate}
+        onResetJoint={handleResetJoint}
+        onResetLimb={handleResetLimb}
+        onResetAllPose={handleResetAllPose}
+        onMirrorPose={handleMirrorPose}
+        onNudgeAngle={handleNudgeAngle}
+        onToggleLimits={handleToggleLimits}
       />
 
       {/* Modals */}

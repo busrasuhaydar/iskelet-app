@@ -3,7 +3,6 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { SkeletonRig } from './SkeletonRig';
 import {
   SkeletonFigureData,
@@ -114,21 +113,16 @@ export class ChromeStudio {
     this.transformControls.addEventListener('dragging-changed', (event) => {
       this.orbitControls.enabled = !event.value;
       if (!event.value) {
-        // Dragging finished: sync pose
+        // Dragging finished: sync pose and save history
         if (this.activeFigureId) {
           const rig = this.figures.get(this.activeFigureId);
           if (rig && this.selectedJointKey) {
             const grp = rig.getJointGroup(this.selectedJointKey);
             if (grp) {
-              const isNegatedX =
-                this.selectedJointKey === 'lower_arm_L' ||
-                this.selectedJointKey === 'lower_arm_R' ||
-                this.selectedJointKey === 'wrist_L' ||
-                this.selectedJointKey === 'wrist_R';
               const deg: [number, number, number] = [
-                THREE.MathUtils.radToDeg(isNegatedX ? -grp.rotation.x : grp.rotation.x),
-                THREE.MathUtils.radToDeg(grp.rotation.y),
-                THREE.MathUtils.radToDeg(grp.rotation.z),
+                Math.round(THREE.MathUtils.radToDeg(grp.rotation.x)),
+                Math.round(THREE.MathUtils.radToDeg(grp.rotation.y)),
+                Math.round(THREE.MathUtils.radToDeg(grp.rotation.z)),
               ];
               rig.setJointRotation(this.selectedJointKey, { x: deg[0], y: deg[1], z: deg[2] });
               this.callbacks.onPoseChanged?.(this.activeFigureId);
@@ -143,7 +137,20 @@ export class ChromeStudio {
     });
 
     this.transformControls.addEventListener('change', () => {
-      this.callbacks.onTransformChanged?.();
+      // Real-time synchronization while dragging the rotation gizmo
+      if (this.transformControls.dragging && this.activeFigureId && this.selectedJointKey) {
+        const rig = this.figures.get(this.activeFigureId);
+        if (rig) {
+          const grp = rig.getJointGroup(this.selectedJointKey);
+          if (grp) {
+            const degX = Math.round(THREE.MathUtils.radToDeg(grp.rotation.x));
+            const degY = Math.round(THREE.MathUtils.radToDeg(grp.rotation.y));
+            const degZ = Math.round(THREE.MathUtils.radToDeg(grp.rotation.z));
+            rig.currentPose.joints[this.selectedJointKey] = { x: degX, y: degY, z: degZ };
+            this.callbacks.onTransformChanged?.();
+          }
+        }
+      }
     });
 
     // 6. PMREM Studio Environment for Mirror Chrome
@@ -175,6 +182,8 @@ export class ChromeStudio {
     // 8. Event Listeners
     window.addEventListener('resize', this.onWindowResize);
     this.renderer.domElement.addEventListener('pointerdown', this.onPointerDown);
+    this.renderer.domElement.addEventListener('pointerup', this.onPointerUp);
+    this.renderer.domElement.addEventListener('pointermove', this.onPointerMove);
 
     // 9. Start Render Loop
     this.animate();
@@ -479,11 +488,42 @@ export class ChromeStudio {
     const jointGrp = rig.getJointGroup(jointKey);
     if (jointGrp) {
       this.transformControls.attach(jointGrp);
-      this.transformControls.setMode(this.gizmoMode === 'translate' ? 'translate' : 'rotate');
+      // Strictly lock to rotate: joints never translate away from sockets!
+      const isRoot = jointKey === 'pelvis';
+      this.transformControls.setMode(isRoot && this.gizmoMode === 'translate' ? 'translate' : 'rotate');
       this.transformControls.setSpace(this.transformSpace);
     }
 
     this.callbacks.onJointSelected?.(rig.id, jointKey);
+  }
+
+  public selectBone(boneName: string | null) {
+    const rig = this.getActiveFigure();
+    if (!rig) {
+      this.transformControls.detach();
+      return;
+    }
+
+    rig.selectBoneByName(boneName);
+    this.selectedJointKey = rig.selectedJointKey;
+
+    if (!boneName || !rig.selectedBoneNode) {
+      if (this.gizmoMode === 'translate') {
+        this.attachGizmoToRoot(rig);
+      } else {
+        this.transformControls.detach();
+      }
+      this.callbacks.onJointSelected?.(rig.id, null);
+      return;
+    }
+
+    this.transformControls.attach(rig.selectedBoneNode);
+    // Strictly lock to rotate: bones rotate around anatomical socket!
+    const isRoot = rig.selectedJointKey === 'pelvis';
+    this.transformControls.setMode(isRoot && this.gizmoMode === 'translate' ? 'translate' : 'rotate');
+    this.transformControls.setSpace(this.transformSpace);
+
+    this.callbacks.onJointSelected?.(rig.id, rig.selectedJointKey);
   }
 
   public setGizmoMode(mode: GizmoMode) {
@@ -492,13 +532,19 @@ export class ChromeStudio {
     if (!rig) return;
 
     if (mode === 'translate') {
-      if (!this.selectedJointKey) {
+      if (!this.selectedJointKey && !rig.selectedBoneNode) {
         this.attachGizmoToRoot(rig);
-      } else {
+      } else if (this.selectedJointKey === 'pelvis') {
         this.transformControls.setMode('translate');
+      } else {
+        // Individual joints are locked to rotation so limbs never detach
+        this.transformControls.setMode('rotate');
       }
     } else if (mode === 'rotate') {
-      if (this.selectedJointKey) {
+      if (rig.selectedBoneNode) {
+        this.transformControls.attach(rig.selectedBoneNode);
+        this.transformControls.setMode('rotate');
+      } else if (this.selectedJointKey) {
         const jGrp = rig.getJointGroup(this.selectedJointKey);
         if (jGrp) {
           this.transformControls.attach(jGrp);
@@ -529,10 +575,20 @@ export class ChromeStudio {
   // RAYCAST PICKING
   // ==========================================
 
+  private pointerDownPos = { x: 0, y: 0 };
+
   private onPointerDown = (event: PointerEvent) => {
-    // Only handle primary left clicks or taps not on gizmo
+    if (event.button !== 0) return;
+    this.pointerDownPos = { x: event.clientX, y: event.clientY };
+  };
+
+  private onPointerUp = (event: PointerEvent) => {
     if (event.button !== 0) return;
     if (this.transformControls.dragging) return;
+
+    // Only handle true clicks (not camera orbit drag)
+    const dist = Math.hypot(event.clientX - this.pointerDownPos.x, event.clientY - this.pointerDownPos.y);
+    if (dist > 6) return;
 
     const rect = this.renderer.domElement.getBoundingClientRect();
     this.mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
@@ -551,25 +607,47 @@ export class ChromeStudio {
     const intersects = this.raycaster.intersectObjects(candidateMeshes, false);
 
     if (intersects.length > 0) {
-      const hit = intersects[0].object;
-      let figureId = hit.userData?.figureId;
-      let jointKey = hit.userData?.jointKey;
+      const hit = intersects[0].object as THREE.Mesh;
+      const { figureId, jointKey, boneName } = hit.userData;
 
-      let current: THREE.Object3D | null = hit;
-      while (current && (!figureId || !jointKey)) {
-        current = current.parent;
-        if (current) {
-          if (!figureId && current.userData?.figureId) figureId = current.userData.figureId;
-          if (!jointKey && current.userData?.jointKey) jointKey = current.userData.jointKey;
-        }
-      }
-
-      if (figureId && jointKey) {
+      const rig = this.figures.get(figureId);
+      if (figureId && rig) {
         if (figureId !== this.activeFigureId) {
           this.setActiveFigure(figureId);
         }
-        this.selectJoint(jointKey);
+
+        if (jointKey) {
+          this.selectJoint(jointKey);
+        } else if (boneName && rig.gltfBones.has(boneName)) {
+          this.selectBone(boneName);
+        }
       }
+    } else {
+      // Clicked on empty space / floor: deselect
+      this.selectJoint(null);
+    }
+  };
+
+  private onPointerMove = (event: PointerEvent) => {
+    if (this.transformControls.dragging) return;
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    this.mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    this.mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+    this.raycaster.setFromCamera(this.mouse, this.activeCamera);
+
+    const candidateMeshes: THREE.Mesh[] = [];
+    this.figures.forEach((rig) => {
+      if (rig.visible && !rig.locked) {
+        candidateMeshes.push(...rig.nodes.boneMeshes);
+      }
+    });
+
+    const intersects = this.raycaster.intersectObjects(candidateMeshes, false);
+    if (intersects.length > 0) {
+      this.renderer.domElement.style.cursor = 'pointer';
+    } else {
+      this.renderer.domElement.style.cursor = 'default';
     }
   };
 
@@ -826,7 +904,7 @@ export class ChromeStudio {
   }
 
   public addCustomModelFigure(gltfScene: THREE.Group, options: CustomModelOptions): SkeletonRig {
-    const modelRoot = ((SkeletonUtils as any).clone(gltfScene) as THREE.Group) || gltfScene.clone(true);
+    const modelRoot = gltfScene.clone(true);
 
     // Compute bounding box
     const box = new THREE.Box3().setFromObject(modelRoot);
@@ -835,21 +913,25 @@ export class ChromeStudio {
     const center = new THREE.Vector3();
     box.getCenter(center);
 
-    // Normalize height to anatomical human standard (~1.8m) if requested
-    if (options.normalizeHeight && size.y > 0) {
-      const targetHeight = 1.8;
-      const scaleFactor = targetHeight / size.y;
-      modelRoot.scale.setScalar(scaleFactor);
-      box.setFromObject(modelRoot);
-      box.getSize(size);
-      box.getCenter(center);
-    }
+    const isDiego = Boolean(modelRoot.getObjectByName('Object_11') && modelRoot.getObjectByName('Object_12'));
 
-    // Center model so its feet/base rests on floor (y = 0)
-    if (options.centerOrigin) {
-      modelRoot.position.x -= center.x;
-      modelRoot.position.z -= center.z;
-      modelRoot.position.y -= box.min.y;
+    if (!isDiego) {
+      // Normalize height to anatomical human standard (~1.8m) if requested
+      if (options.normalizeHeight && size.y > 0) {
+        const targetHeight = 1.8;
+        const scaleFactor = targetHeight / size.y;
+        modelRoot.scale.setScalar(scaleFactor);
+        box.setFromObject(modelRoot);
+        box.getSize(size);
+        box.getCenter(center);
+      }
+
+      // Center model so its feet/base rests on floor (y = 0)
+      if (options.centerOrigin) {
+        modelRoot.position.x -= center.x;
+        modelRoot.position.z -= center.z;
+        modelRoot.position.y -= box.min.y;
+      }
     }
 
     const preset =
@@ -901,25 +983,29 @@ export class ChromeStudio {
       return this.addCustomModelFigure(gltfScene, options);
     }
 
-    const modelRoot = ((SkeletonUtils as any).clone(gltfScene) as THREE.Group) || gltfScene.clone(true);
+    const modelRoot = gltfScene.clone(true);
     const box = new THREE.Box3().setFromObject(modelRoot);
     const size = new THREE.Vector3();
     box.getSize(size);
     const center = new THREE.Vector3();
     box.getCenter(center);
 
-    if (options.normalizeHeight && size.y > 0) {
-      const targetHeight = 1.8;
-      const scaleFactor = targetHeight / size.y;
-      modelRoot.scale.setScalar(scaleFactor);
-      box.setFromObject(modelRoot);
-      box.getCenter(center);
-    }
+    const isDiego = Boolean(modelRoot.getObjectByName('Object_11') && modelRoot.getObjectByName('Object_12'));
 
-    if (options.centerOrigin) {
-      modelRoot.position.x -= center.x;
-      modelRoot.position.z -= center.z;
-      modelRoot.position.y -= box.min.y;
+    if (!isDiego) {
+      if (options.normalizeHeight && size.y > 0) {
+        const targetHeight = 1.8;
+        const scaleFactor = targetHeight / size.y;
+        modelRoot.scale.setScalar(scaleFactor);
+        box.setFromObject(modelRoot);
+        box.getCenter(center);
+      }
+
+      if (options.centerOrigin) {
+        modelRoot.position.x -= center.x;
+        modelRoot.position.z -= center.z;
+        modelRoot.position.y -= box.min.y;
+      }
     }
 
     targetRig.attachCustomModel(modelRoot, {
@@ -969,6 +1055,8 @@ export class ChromeStudio {
     if (this.animationFrameId) cancelAnimationFrame(this.animationFrameId);
     window.removeEventListener('resize', this.onWindowResize);
     this.renderer.domElement.removeEventListener('pointerdown', this.onPointerDown);
+    this.renderer.domElement.removeEventListener('pointerup', this.onPointerUp);
+    this.renderer.domElement.removeEventListener('pointermove', this.onPointerMove);
 
     this.figures.forEach((rig) => rig.dispose());
     this.figures.clear();

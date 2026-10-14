@@ -13,6 +13,7 @@ import {
   ChevronRight,
   Crosshair,
   Sliders,
+  Layers,
 } from 'lucide-react';
 import { SkeletonRig } from '../scene/SkeletonRig';
 import { JointKey } from '../types/skeleton';
@@ -28,6 +29,7 @@ interface LeftPanelProps {
   onDuplicateFigure: (id: string) => void;
   onRemoveFigure: (id: string) => void;
   onSelectJoint: (key: JointKey | null) => void;
+  onSelectBone?: (boneName: string | null) => void;
   onToggleVisibility: (id: string) => void;
   onToggleLock: (id: string) => void;
   onToggleIK: (id: string) => void;
@@ -44,6 +46,7 @@ export const LeftPanel: React.FC<LeftPanelProps> = ({
   onDuplicateFigure,
   onRemoveFigure,
   onSelectJoint,
+  onSelectBone,
   onToggleVisibility,
   onToggleLock,
   onToggleIK,
@@ -282,6 +285,57 @@ export const LeftPanel: React.FC<LeftPanelProps> = ({
             </div>
           );
         })}
+
+        {/* 3. Custom GLTF Articulated Bones Tree */}
+        {activeRig?.isCustomModel && activeRig.gltfBoneList && activeRig.gltfBoneList.length > 0 && (
+          <div className="pt-2.5 border-t border-white/10 space-y-1">
+            <button
+              onClick={() => toggleCategory('gltf_bones')}
+              className="w-full flex items-center justify-between py-1 text-xs font-semibold text-cyan-300 hover:text-cyan-200 transition-colors"
+            >
+              <div className="flex items-center gap-1.5 truncate">
+                <Layers className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                <span className="truncate">GLTF Model Kemikleri ({activeRig.gltfBoneList.length})</span>
+              </div>
+              {collapsedCategories['gltf_bones'] ? (
+                <ChevronRight className="w-3.5 h-3.5 text-slate-500" />
+              ) : (
+                <ChevronDown className="w-3.5 h-3.5 text-slate-500" />
+              )}
+            </button>
+
+            {!collapsedCategories['gltf_bones'] && (
+              <div className="space-y-0.5 pl-2 border-l border-cyan-500/30 max-h-60 overflow-y-auto pr-1">
+                {activeRig.gltfBoneList.map((bItem) => {
+                  const isSelected = activeRig.selectedBoneName === bItem.name;
+                  return (
+                    <button
+                      key={bItem.name}
+                      onClick={() => onSelectBone?.(isSelected ? null : bItem.name)}
+                      className={`w-full text-left px-2 py-1 rounded text-[11px] truncate transition-colors flex items-center justify-between ${
+                        isSelected
+                          ? 'bg-cyan-500/25 text-cyan-200 font-medium border border-cyan-500/50 shadow-sm'
+                          : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
+                      }`}
+                    >
+                      <span className="truncate">{bItem.label}</span>
+                      {bItem.matchedKey ? (
+                        <span className="text-[9px] px-1 py-0.2 rounded bg-cyan-500/10 text-cyan-400/80 shrink-0 font-mono">
+                          {bItem.matchedKey}
+                        </span>
+                      ) : (
+                        <span className="text-[9px] px-1 py-0.2 rounded bg-white/5 text-slate-500 shrink-0 font-mono">
+                          bone
+                        </span>
+                      )}
+                      {isSelected && <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 shrink-0 ml-1" />}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </aside>
   );
