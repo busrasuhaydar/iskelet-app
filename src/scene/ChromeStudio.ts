@@ -11,15 +11,18 @@ import {
   GizmoMode,
   TransformSpace,
   JointKey,
+  AnimationPlayerState,
 } from '../types/skeleton';
 import { CHROME_MATERIAL_PRESETS, DEFAULT_NEUTRAL_POSE } from './jointDefinitions';
 import { ModelInspectionStats, CustomModelOptions } from '../types/modelImport';
+import { MOTION_CAPTURE_CLIPS, MotionClip } from '../services/motionCaptureData';
 
 export interface StudioCallbacks {
   onJointSelected?: (figureId: string, jointKey: JointKey | null) => void;
   onFigureSelected?: (figureId: string) => void;
   onPoseChanged?: (figureId: string) => void;
   onTransformChanged?: () => void;
+  onAnimationUpdate?: (state: AnimationPlayerState) => void;
 }
 
 export class ChromeStudio {
@@ -43,6 +46,10 @@ export class ChromeStudio {
   private lightingGroup: THREE.Group;
   private floorMesh: THREE.Mesh;
   public lightingState: LightingStudioState;
+  public cachedGLTFScene: THREE.Group | null = null;
+  public cachedGLTFBuffer: ArrayBuffer | null = null;
+  private bgTexture: THREE.Texture | null = null;
+  private floorTexture: THREE.Texture | null = null;
 
   // Gizmo & Interaction
   public gizmoMode: GizmoMode = 'rotate';
@@ -77,7 +84,7 @@ export class ChromeStudio {
 
     // 3. Cameras
     const aspect = container.clientWidth / container.clientHeight;
-    this.perspectiveCamera = new THREE.PerspectiveCamera(45, aspect, 0.1, 100);
+    this.perspectiveCamera = new THREE.PerspectiveCamera(45, aspect, 0.05, 100);
     this.perspectiveCamera.position.set(0, 1.4, 3.8);
 
     const frustumSize = 3;
@@ -86,7 +93,7 @@ export class ChromeStudio {
       (frustumSize * aspect) / 2,
       frustumSize / 2,
       -frustumSize / 2,
-      0.1,
+      0.05,
       100
     );
     this.orthographicCamera.position.set(0, 1.4, 3.8);
@@ -366,11 +373,176 @@ export class ChromeStudio {
         this.lightingState.lights[1].intensity = 1.5;
         this.lightingState.lights[1].color = '#fed7aa';
         this.lightingState.lights[2].intensity = 3.0;
-        this.lightingState.lights[2].color = '#f59e0b';
+        this.lightingState.lights[2].color = '#fed7aa';
+        break;
+
+      case 'sky_clouds':
+        this.scene.background = new THREE.Color('#38bdf8');
+        this.lightingState.backgroundStyle = 'sky_clouds';
+        this.lightingState.backgroundColor = '#38bdf8';
+        this.lightingState.floorColor = '#64748b';
+        this.lightingState.ambientIntensity = 0.65;
+        this.lightingState.lights[0].intensity = 3.6;
+        this.lightingState.lights[0].color = '#fef08a'; // Sunlight
+        this.lightingState.lights[1].intensity = 2.0;
+        this.lightingState.lights[1].color = '#7dd3fc'; // Sky fill
+        this.lightingState.lights[2].intensity = 2.8;
+        this.lightingState.lights[2].color = '#e0f2fe';
+        break;
+
+      case 'ocean_sea':
+        this.scene.background = new THREE.Color('#0284c7');
+        this.lightingState.backgroundStyle = 'ocean_sea';
+        this.lightingState.backgroundColor = '#0284c7';
+        this.lightingState.floorColor = '#0f766e';
+        this.lightingState.ambientIntensity = 0.5;
+        this.lightingState.lights[0].intensity = 3.2;
+        this.lightingState.lights[0].color = '#38bdf8'; // Aqua
+        this.lightingState.lights[1].intensity = 2.2;
+        this.lightingState.lights[1].color = '#0d9488'; // Teal
+        this.lightingState.lights[2].intensity = 4.0;
+        this.lightingState.lights[2].color = '#22d3ee';
+        break;
+
+      case 'sunset':
+        this.scene.background = new THREE.Color('#701a75');
+        this.lightingState.backgroundStyle = 'sunset';
+        this.lightingState.backgroundColor = '#701a75';
+        this.lightingState.floorColor = '#4a044e';
+        this.lightingState.ambientIntensity = 0.45;
+        this.lightingState.lights[0].intensity = 3.8;
+        this.lightingState.lights[0].color = '#f97316'; // Orange sunset
+        this.lightingState.lights[1].intensity = 2.0;
+        this.lightingState.lights[1].color = '#d946ef'; // Magenta
+        this.lightingState.lights[2].intensity = 4.5;
+        this.lightingState.lights[2].color = '#fbbf24'; // Warm gold rim
+        break;
+
+      case 'cyberpunk':
+        this.scene.background = new THREE.Color('#09090b');
+        this.lightingState.backgroundStyle = 'cyberpunk';
+        this.lightingState.backgroundColor = '#09090b';
+        this.lightingState.floorColor = '#18181b';
+        this.lightingState.ambientIntensity = 0.25;
+        this.lightingState.lights[0].intensity = 3.5;
+        this.lightingState.lights[0].color = '#06b6d4'; // Cyan
+        this.lightingState.lights[1].intensity = 3.0;
+        this.lightingState.lights[1].color = '#ec4899'; // Hot pink
+        this.lightingState.lights[2].intensity = 5.0;
+        this.lightingState.lights[2].color = '#a855f7'; // Purple rim
+        break;
+
+      case 'space_deep':
+        this.scene.background = new THREE.Color('#020617');
+        this.lightingState.backgroundStyle = 'deep_indigo';
+        this.lightingState.backgroundColor = '#020617';
+        this.lightingState.floorColor = '#030712';
+        this.lightingState.ambientIntensity = 0.15;
+        this.lightingState.lights[0].intensity = 2.5;
+        this.lightingState.lights[0].color = '#f8fafc';
+        this.lightingState.lights[1].intensity = 1.0;
+        this.lightingState.lights[1].color = '#38bdf8';
+        this.lightingState.lights[2].intensity = 5.2;
+        this.lightingState.lights[2].color = '#818cf8';
         break;
     }
 
+    if (this.lightingState.backgroundImage) {
+      // Keep background image if user uploaded one
+      this.setBackgroundImage(this.lightingState.backgroundImage);
+    }
+
     this.buildStudioLights();
+  }
+
+  public setBackgroundImage(dataUrl: string | null) {
+    this.lightingState.backgroundImage = dataUrl;
+    if (this.bgTexture) {
+      this.bgTexture.dispose();
+      this.bgTexture = null;
+    }
+
+    if (dataUrl) {
+      const loader = new THREE.TextureLoader();
+      loader.load(dataUrl, (texture) => {
+        texture.colorSpace = THREE.SRGBColorSpace;
+        this.bgTexture = texture;
+        this.scene.background = texture;
+        this.lightingState.backgroundStyle = 'custom_image';
+      });
+    } else {
+      const col = this.lightingState.backgroundColor || '#0b0c10';
+      this.scene.background = new THREE.Color(col);
+      this.lightingState.backgroundStyle = 'studio_seamless';
+    }
+  }
+
+  public setBackgroundColor(color: string) {
+    this.lightingState.backgroundColor = color;
+    if (!this.lightingState.backgroundImage) {
+      this.scene.background = new THREE.Color(color);
+    }
+  }
+
+  public setFloorTexture(dataUrl: string | null, repeat: number = 4) {
+    this.lightingState.floorTexture = dataUrl;
+    this.lightingState.floorRepeat = repeat;
+    const floorMat = this.floorMesh.material as THREE.MeshStandardMaterial;
+
+    if (this.floorTexture) {
+      this.floorTexture.dispose();
+      this.floorTexture = null;
+    }
+
+    if (dataUrl) {
+      const loader = new THREE.TextureLoader();
+      loader.load(dataUrl, (texture) => {
+        texture.wrapS = THREE.RepeatWrapping;
+        texture.wrapT = THREE.RepeatWrapping;
+        texture.repeat.set(repeat, repeat);
+        texture.colorSpace = THREE.SRGBColorSpace;
+        this.floorTexture = texture;
+        floorMat.map = texture;
+        floorMat.color.set('#ffffff'); // Neutral white so custom image colors show accurately
+        floorMat.roughness = this.lightingState.floorReflective ? 0.25 : 0.85;
+        floorMat.needsUpdate = true;
+      });
+    } else {
+      floorMat.map = null;
+      floorMat.color.set(this.lightingState.floorColor);
+      floorMat.roughness = this.lightingState.floorReflective ? 0.15 : 0.8;
+      floorMat.needsUpdate = true;
+    }
+  }
+
+  public setFloorRepeat(repeat: number) {
+    this.lightingState.floorRepeat = repeat;
+    if (this.floorTexture) {
+      this.floorTexture.repeat.set(repeat, repeat);
+      this.floorTexture.needsUpdate = true;
+    }
+  }
+
+  public setFloorVisible(visible: boolean) {
+    this.lightingState.floorVisible = visible;
+    this.floorMesh.visible = visible;
+  }
+
+  public setFloorColor(color: string) {
+    this.lightingState.floorColor = color;
+    const floorMat = this.floorMesh.material as THREE.MeshStandardMaterial;
+    if (!this.lightingState.floorTexture) {
+      floorMat.color.set(color);
+      floorMat.needsUpdate = true;
+    }
+  }
+
+  public setFloorReflective(reflective: boolean) {
+    this.lightingState.floorReflective = reflective;
+    const floorMat = this.floorMesh.material as THREE.MeshStandardMaterial;
+    floorMat.roughness = reflective ? 0.15 : 0.85;
+    floorMat.metalness = reflective ? 0.6 : 0.1;
+    floorMat.needsUpdate = true;
   }
 
   // ==========================================
@@ -417,27 +589,42 @@ export class ChromeStudio {
 
     const newId = `figure_${Date.now()}`;
     const newPos: [number, number, number] = [
-      source.currentPose.position[0] + 0.6,
+      source.currentPose.position[0] + 0.65,
       source.currentPose.position[1],
       source.currentPose.position[2],
     ];
 
     const copyData: SkeletonFigureData = {
       id: newId,
-      name: `${source.name} (Copy)`,
+      name: `${source.name} (Kopya)`,
       visible: true,
       locked: false,
       ikEnabled: source.ikEnabled,
       enforceJointLimits: source.enforceJointLimits,
-      material: { ...CHROME_MATERIAL_PRESETS.rainbow_chrome },
+      material: JSON.parse(JSON.stringify(source.currentMaterialSettings)),
       pose: {
         ...JSON.parse(JSON.stringify(source.currentPose)),
         position: newPos,
       },
     };
 
-    const newRig = this.addFigure(copyData);
-    this.setActiveFigure(newId);
+    // If anatomical model GLB is cached, duplicate the authentic anatomical skeleton!
+    let newRig: SkeletonRig;
+    if (this.cachedGLTFScene) {
+      newRig = this.addCustomModelFigure(this.cachedGLTFScene, {
+        name: copyData.name,
+        applyChromeMaterial: true,
+      });
+      newRig.setPosition(newPos);
+      newRig.applyPose(copyData.pose);
+      if (this.studioEnvTexture) {
+        newRig.updateMaterial(copyData.material, this.studioEnvTexture);
+      }
+    } else {
+      newRig = this.addFigure(copyData);
+    }
+
+    this.setActiveFigure(newRig.id);
     return newRig;
   }
 
@@ -596,10 +783,10 @@ export class ChromeStudio {
 
     this.raycaster.setFromCamera(this.mouse, this.activeCamera);
 
-    // Collect all bone meshes across all figures
+    // Collect all bone meshes across all figures safely
     const candidateMeshes: THREE.Mesh[] = [];
     this.figures.forEach((rig) => {
-      if (rig.visible && !rig.locked) {
+      if (rig.visible && !rig.locked && rig.nodes?.boneMeshes) {
         candidateMeshes.push(...rig.nodes.boneMeshes);
       }
     });
@@ -608,7 +795,51 @@ export class ChromeStudio {
 
     if (intersects.length > 0) {
       const hit = intersects[0].object as THREE.Mesh;
-      const { figureId, jointKey, boneName } = hit.userData;
+      let { figureId, jointKey, boneName } = hit.userData;
+
+      const targetRig = figureId ? this.figures.get(figureId) : null;
+
+      // Distance-based 3D elbow socket snapping (reliable in all camera angles & poses)
+      if (targetRig) {
+        const elL = targetRig.getJointGroup('lower_arm_L');
+        const elR = targetRig.getJointGroup('lower_arm_R');
+        if (elL) {
+          const elPosL = new THREE.Vector3();
+          elL.getWorldPosition(elPosL);
+          if (intersects[0].point.distanceTo(elPosL) < 0.16) {
+            jointKey = 'lower_arm_L';
+          }
+        }
+        if (elR) {
+          const elPosR = new THREE.Vector3();
+          elR.getWorldPosition(elPosR);
+          if (intersects[0].point.distanceTo(elPosR) < 0.16) {
+            jointKey = 'lower_arm_R';
+          }
+        }
+      }
+
+      // Smart Vertebral & Cervical Spine picking based on hit height
+      if (hit.userData?.isSkinnedSpine || hit.name === 'Vertebral_Spine_Column' || hit.name === 'Cervical_Vertebrae_Skinned') {
+        const pointY = intersects[0].point.y;
+        if (pointY < 1.15) {
+          jointKey = 'spine_lumbar';
+        } else if (pointY < 1.45) {
+          jointKey = 'spine_thoracic';
+        } else {
+          jointKey = 'spine_cervical';
+        }
+      } else if (hit.userData?.isElbowPicker) {
+        jointKey = hit.userData.jointKey;
+      } else if (hit.name?.includes('Ulna_Forearm_L') || hit.name?.includes('Radius_Forearm_L')) {
+        jointKey = 'lower_arm_L';
+      } else if (hit.name?.includes('Ulna_Forearm_R') || hit.name?.includes('Radius_Forearm_R')) {
+        jointKey = 'lower_arm_R';
+      } else if (hit.name?.includes('Hand_Digits_L')) {
+        jointKey = 'wrist_L';
+      } else if (hit.name?.includes('Hand_Digits_R')) {
+        jointKey = 'wrist_R';
+      }
 
       const rig = this.figures.get(figureId);
       if (figureId && rig) {
@@ -721,6 +952,43 @@ export class ChromeStudio {
 
   public setExposure(val: number) {
     this.renderer.toneMappingExposure = val;
+  }
+
+  public getCameraState(): CameraState {
+    const isOrthographic = this.activeCamera === this.orthographicCamera;
+    return {
+      fov: this.perspectiveCamera.fov,
+      isOrthographic,
+      position: [this.activeCamera.position.x, this.activeCamera.position.y, this.activeCamera.position.z],
+      target: [this.orbitControls.target.x, this.orbitControls.target.y, this.orbitControls.target.z],
+    };
+  }
+
+  public setCameraState(state: CameraState) {
+    if (state.isOrthographic !== (this.activeCamera === this.orthographicCamera)) {
+      this.toggleOrthographicCamera(state.isOrthographic);
+    }
+    this.perspectiveCamera.fov = state.fov || 45;
+    this.perspectiveCamera.updateProjectionMatrix();
+    this.activeCamera.position.set(...state.position);
+    this.orbitControls.target.set(...state.target);
+    this.activeCamera.lookAt(this.orbitControls.target);
+    this.orbitControls.update();
+  }
+
+  public captureThumbnail(width = 360, height = 360): string {
+    const prevSize = new THREE.Vector2();
+    this.renderer.getSize(prevSize);
+    const prevGizmoVisible = this.transformControls.getHelper().visible;
+
+    this.transformControls.getHelper().visible = false;
+    this.renderer.setSize(width, height, false);
+    this.renderer.render(this.scene, this.activeCamera);
+    const dataUrl = this.renderer.domElement.toDataURL('image/jpeg', 0.85);
+
+    this.renderer.setSize(prevSize.x, prevSize.y, false);
+    this.transformControls.getHelper().visible = prevGizmoVisible;
+    return dataUrl;
   }
 
   // ==========================================
@@ -873,6 +1141,11 @@ export class ChromeStudio {
         '',
         (gltf) => {
           const stats = this.inspectGLTFModel(gltf, filename);
+          const scene = gltf.scene || gltf.scenes?.[0];
+          if (scene) {
+            this.cachedGLTFScene = scene;
+            this.cachedGLTFBuffer = buffer;
+          }
           resolve({ gltf, stats });
         },
         (error) => {
@@ -893,6 +1166,10 @@ export class ChromeStudio {
         (gltf) => {
           const name = filename || url.split('/').pop()?.split('?')[0] || 'remote_model.gltf';
           const stats = this.inspectGLTFModel(gltf, name);
+          const scene = gltf.scene || gltf.scenes?.[0];
+          if (scene) {
+            this.cachedGLTFScene = scene;
+          }
           resolve({ gltf, stats });
         },
         undefined,
@@ -1008,9 +1285,19 @@ export class ChromeStudio {
       }
     }
 
+    this.cachedGLTFScene = gltfScene;
+
     targetRig.attachCustomModel(modelRoot, {
       applyChromeMaterial: options.applyChromeMaterial,
       customName: options.name,
+    });
+
+    // Ensure all meshes have double-sided rendering and frustum culling disabled so skull is always visible from any angle
+    targetRig.nodes?.boneMeshes?.forEach((mesh) => {
+      mesh.frustumCulled = false;
+      if (mesh.material) {
+        (mesh.material as any).side = THREE.DoubleSide;
+      }
     });
 
     if (this.studioEnvTexture) {
@@ -1023,11 +1310,258 @@ export class ChromeStudio {
   }
 
   // ==========================================
+  // MOTION-CAPTURE ANIMATION STUDIO
+  // ==========================================
+
+  public isAnimationPlaying: boolean = false;
+  public activeClip: MotionClip | null = null;
+  public animationTime: number = 0;
+  public animationSpeed: number = 1.0;
+  public animationLoop: boolean = true;
+  public animationRootMotion: boolean = true;
+  private animationClock: THREE.Clock = new THREE.Clock();
+  private originalPosesBeforeAnimation: Map<string, any> = new Map();
+
+  public playMotionClip(
+    clipId: string,
+    options: { speed?: number; loop?: boolean; rootMotion?: boolean } = {}
+  ) {
+    const clip = MOTION_CAPTURE_CLIPS[clipId];
+    if (!clip) {
+      console.warn(`Motion clip ${clipId} not found.`);
+      return;
+    }
+
+    // Save initial pose snapshot if starting playback
+    if (!this.activeClip) {
+      this.figures.forEach((rig, id) => {
+        this.originalPosesBeforeAnimation.set(id, JSON.parse(JSON.stringify(rig.currentPose)));
+      });
+    }
+
+    // If multi-character hug and only 1 figure exists, spawn partner figure automatically
+    if (clipId === 'two_character_hug' && this.figures.size < 2) {
+      const partnerData: SkeletonFigureData = {
+        id: `figure_${Date.now()}`,
+        name: 'Partner İskelet',
+        visible: true,
+        locked: false,
+        ikEnabled: false,
+        enforceJointLimits: true,
+        material: { ...CHROME_MATERIAL_PRESETS.rose_gold },
+        pose: {
+          ...JSON.parse(JSON.stringify(DEFAULT_NEUTRAL_POSE)),
+          joints: { ...DEFAULT_NEUTRAL_POSE.joints },
+        },
+      };
+      this.addFigure(partnerData);
+    }
+
+    this.activeClip = clip;
+    this.animationTime = 0;
+    this.animationSpeed = options.speed ?? clip.speed ?? 1.0;
+    this.animationLoop = options.loop ?? clip.loop ?? true;
+    this.animationRootMotion = options.rootMotion ?? clip.hasRootMotion ?? true;
+    this.isAnimationPlaying = true;
+    this.animationClock.start();
+
+    this.notifyAnimationUpdate();
+  }
+
+  public pauseAnimation() {
+    this.isAnimationPlaying = false;
+    this.notifyAnimationUpdate();
+  }
+
+  public resumeAnimation() {
+    if (this.activeClip) {
+      this.isAnimationPlaying = true;
+      this.animationClock.start();
+      this.notifyAnimationUpdate();
+    }
+  }
+
+  public stopAnimation() {
+    this.isAnimationPlaying = false;
+    this.activeClip = null;
+    this.animationTime = 0;
+
+    // Restore original pose before animation
+    this.figures.forEach((rig, id) => {
+      const saved = this.originalPosesBeforeAnimation.get(id);
+      if (saved) {
+        rig.applyPose(saved);
+      }
+    });
+    this.originalPosesBeforeAnimation.clear();
+
+    this.notifyAnimationUpdate();
+  }
+
+  public seekAnimation(timeInSeconds: number) {
+    if (!this.activeClip) return;
+    this.animationTime = Math.max(0, Math.min(this.activeClip.duration, timeInSeconds));
+    this.evaluateAnimationFrame(this.animationTime);
+    this.notifyAnimationUpdate();
+  }
+
+  public setAnimationSpeed(speed: number) {
+    this.animationSpeed = Math.max(0.1, Math.min(3.0, speed));
+    this.notifyAnimationUpdate();
+  }
+
+  public setAnimationRootMotion(enable: boolean) {
+    this.animationRootMotion = enable;
+    this.notifyAnimationUpdate();
+  }
+
+  public setAnimationLoop(loop: boolean) {
+    this.animationLoop = loop;
+    this.notifyAnimationUpdate();
+  }
+
+  private notifyAnimationUpdate() {
+    if (this.callbacks.onAnimationUpdate) {
+      this.callbacks.onAnimationUpdate({
+        currentClipId: this.activeClip?.id || null,
+        clipName: this.activeClip?.name || '',
+        currentTime: this.animationTime,
+        duration: this.activeClip?.duration || 0,
+        isPlaying: this.isAnimationPlaying,
+        playbackSpeed: this.animationSpeed,
+        loop: this.animationLoop,
+        rootMotion: this.animationRootMotion,
+      });
+    }
+  }
+
+  private evaluateAnimationFrame(time: number) {
+    if (!this.activeClip) return;
+    const clip = this.activeClip;
+    const keyframes = clip.keyframes;
+    if (!keyframes || keyframes.length === 0) return;
+
+    // Find keyframe interval
+    let k0 = keyframes[0];
+    let k1 = keyframes[keyframes.length - 1];
+
+    for (let i = 0; i < keyframes.length - 1; i++) {
+      if (time >= keyframes[i].time && time <= keyframes[i + 1].time) {
+        k0 = keyframes[i];
+        k1 = keyframes[i + 1];
+        break;
+      }
+    }
+
+    const span = k1.time - k0.time || 0.0001;
+    const alpha = Math.max(0, Math.min(1, (time - k0.time) / span));
+
+    // Handle coordinated two-character hug
+    if (clip.id === 'two_character_hug') {
+      const figureArr = Array.from(this.figures.values());
+      if (figureArr.length >= 2) {
+        const fig0 = figureArr[0];
+        const fig1 = figureArr[1];
+
+        // Position figures facing each other at chest distance
+        fig0.setPosition([-0.22, 0, 0]);
+        fig0.setRotation([0, 85, 0]);
+        fig1.setPosition([0.22, 0, 0]);
+        fig1.setRotation([0, -95, 0]);
+
+        // Interpolate joint rotations for Fig 0
+        const allJoints = Object.keys({ ...k0.joints, ...k1.joints }) as JointKey[];
+        allJoints.forEach((jk) => {
+          const rot0 = k0.joints[jk] || { x: 0, y: 0, z: 0 };
+          const rot1 = k1.joints[jk] || { x: 0, y: 0, z: 0 };
+          const x = THREE.MathUtils.lerp(rot0.x, rot1.x, alpha);
+          const y = THREE.MathUtils.lerp(rot0.y, rot1.y, alpha);
+          const z = THREE.MathUtils.lerp(rot0.z, rot1.z, alpha);
+          fig0.setJointRotation(jk, { x, y, z }, false);
+
+          // Fig 1 reciprocates with symmetrical arm wrapping
+          const mirroredZ = jk.includes('_L') ? jk.replace('_L', '_R') : jk.replace('_R', '_L');
+          fig1.setJointRotation(mirroredZ as JointKey, { x, y: -y, z: -z }, false);
+        });
+
+        fig0.validateAndClampToGround();
+        fig1.validateAndClampToGround();
+        return;
+      }
+    }
+
+    const activeRig = this.getActiveFigure();
+    if (!activeRig) return;
+
+    // Interpolate joint rotations for active figure
+    const allJoints = Object.keys({ ...k0.joints, ...k1.joints }) as JointKey[];
+    allJoints.forEach((jk) => {
+      const rot0 = k0.joints[jk] || activeRig.getJointRotation(jk);
+      const rot1 = k1.joints[jk] || rot0;
+
+      // Shortest path angle interpolation
+      let dx = (rot1.x - rot0.x) % 360;
+      if (dx > 180) dx -= 360;
+      if (dx < -180) dx += 360;
+      const x = rot0.x + dx * alpha;
+
+      let dy = (rot1.y - rot0.y) % 360;
+      if (dy > 180) dy -= 360;
+      if (dy < -180) dy += 360;
+      const y = rot0.y + dy * alpha;
+
+      let dz = (rot1.z - rot0.z) % 360;
+      if (dz > 180) dz -= 360;
+      if (dz < -180) dz += 360;
+      const z = rot0.z + dz * alpha;
+
+      activeRig.setJointRotation(jk, { x, y, z }, false);
+    });
+
+    // Root motion
+    if (this.animationRootMotion && k0.rootPosition && k1.rootPosition) {
+      const px = THREE.MathUtils.lerp(k0.rootPosition[0], k1.rootPosition[0], alpha);
+      const py = THREE.MathUtils.lerp(k0.rootPosition[1], k1.rootPosition[1], alpha);
+      const pz = THREE.MathUtils.lerp(k0.rootPosition[2], k1.rootPosition[2], alpha);
+      activeRig.setPosition([px, py, pz]);
+    }
+
+    if (k0.rootRotation && k1.rootRotation) {
+      const rx = THREE.MathUtils.lerp(k0.rootRotation[0], k1.rootRotation[0], alpha);
+      const ry = THREE.MathUtils.lerp(k0.rootRotation[1], k1.rootRotation[1], alpha);
+      const rz = THREE.MathUtils.lerp(k0.rootRotation[2], k1.rootRotation[2], alpha);
+      activeRig.setRotation([rx, ry, rz]);
+    }
+
+    // Always keep feet clamped on ground
+    activeRig.validateAndClampToGround();
+  }
+
+  // ==========================================
   // RENDER LOOP & RESIZE
   // ==========================================
 
   private animate = () => {
     this.animationFrameId = requestAnimationFrame(this.animate);
+
+    // Update Motion Capture Animation Player
+    if (this.isAnimationPlaying && this.activeClip) {
+      const delta = this.animationClock.getDelta() * this.animationSpeed;
+      this.animationTime += delta;
+
+      if (this.animationTime >= this.activeClip.duration) {
+        if (this.animationLoop) {
+          this.animationTime = this.animationTime % this.activeClip.duration;
+        } else {
+          this.animationTime = this.activeClip.duration;
+          this.isAnimationPlaying = false;
+        }
+      }
+
+      this.evaluateAnimationFrame(this.animationTime);
+      this.notifyAnimationUpdate();
+    }
+
     this.orbitControls.update();
     this.renderer.render(this.scene, this.activeCamera);
   };

@@ -19,6 +19,9 @@ interface ViewportHUDProps {
   onSetGizmoMode: (mode: GizmoMode) => void;
   onSetTransformSpace: (space: TransformSpace) => void;
   onSetFramingRatio: (ratio: 'none' | '1:1' | '4:3' | '16:9' | '9:16') => void;
+  onOpenLibraryModal?: () => void;
+  onQuickSavePose?: () => void;
+  onSelectJoint?: (key: JointKey) => void;
 }
 
 export const ViewportHUD: React.FC<ViewportHUDProps> = ({
@@ -30,26 +33,92 @@ export const ViewportHUD: React.FC<ViewportHUDProps> = ({
   onSetGizmoMode,
   onSetTransformSpace,
   onSetFramingRatio,
+  onOpenLibraryModal,
+  onQuickSavePose,
+  onSelectJoint,
 }) => {
   const jointDef = selectedJointKey ? ANATOMICAL_JOINTS[selectedJointKey] : null;
 
   return (
     <div className="absolute inset-0 pointer-events-none p-4 flex flex-col justify-between z-10">
       {/* Top Floating Bar: Active Selection & Transform Tools */}
-      <div className="flex items-center justify-between gap-4 pointer-events-auto">
-        {/* Selection breadcrumb */}
-        <div className="px-3 py-1.5 bg-black/60 backdrop-blur-md rounded-lg border border-white/10 text-xs text-slate-300 flex items-center gap-2">
-          <span className="font-semibold text-slate-100">{activeFigureName || 'No Figure'}</span>
-          {jointDef && (
-            <>
-              <span className="text-slate-500">·</span>
-              <span className="text-cyan-400 font-medium">{jointDef.label}</span>
-            </>
-          )}
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 pointer-events-auto">
+        {/* Selection breadcrumb + Quick Bone Shortcuts */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          <div className="px-3 py-1.5 bg-black/75 backdrop-blur-md rounded-lg border border-white/10 text-xs text-slate-300 flex items-center gap-2">
+            <span className="font-semibold text-slate-100">{activeFigureName || 'No Figure'}</span>
+            {jointDef && (
+              <>
+                <span className="text-slate-500">·</span>
+                <span className="text-cyan-400 font-medium">{jointDef.label}</span>
+              </>
+            )}
+          </div>
+
+          {/* Quick 1-Click Bone Buttons */}
+          <div className="flex items-center gap-1 bg-black/60 backdrop-blur-md p-1 rounded-lg border border-white/10 text-[11px]">
+            <button
+              onClick={() => onSelectJoint?.('lower_arm_L')}
+              title="Sol Dirseği Seç (Left Elbow)"
+              className={`px-2 py-0.5 rounded transition-all font-medium ${
+                selectedJointKey === 'lower_arm_L'
+                  ? 'bg-cyan-500/30 text-cyan-200 border border-cyan-400'
+                  : 'text-slate-300 hover:text-white hover:bg-white/10'
+              }`}
+            >
+              💪 Sol Dirsek
+            </button>
+            <button
+              onClick={() => onSelectJoint?.('lower_arm_R')}
+              title="Sağ Dirseği Seç (Right Elbow)"
+              className={`px-2 py-0.5 rounded transition-all font-medium ${
+                selectedJointKey === 'lower_arm_R'
+                  ? 'bg-cyan-500/30 text-cyan-200 border border-cyan-400'
+                  : 'text-slate-300 hover:text-white hover:bg-white/10'
+              }`}
+            >
+              💪 Sağ Dirsek
+            </button>
+            <button
+              onClick={() => onSelectJoint?.('head')}
+              title="Kafa / Kuru Kafa Seç (Skull)"
+              className={`px-1.5 py-0.5 rounded transition-all ${
+                selectedJointKey === 'head'
+                  ? 'bg-cyan-500/30 text-cyan-200 border border-cyan-400'
+                  : 'text-slate-400 hover:text-white hover:bg-white/10'
+              }`}
+            >
+              💀 Kafa
+            </button>
+            <button
+              onClick={() => onSelectJoint?.('spine_thoracic')}
+              title="Omurga Seç (Spine)"
+              className={`px-1.5 py-0.5 rounded transition-all ${
+                selectedJointKey === 'spine_thoracic'
+                  ? 'bg-cyan-500/30 text-cyan-200 border border-cyan-400'
+                  : 'text-slate-400 hover:text-white hover:bg-white/10'
+              }`}
+            >
+              🦴 Omurga
+            </button>
+          </div>
         </div>
 
-        {/* Gizmo Controls Toolbar */}
-        <div className="flex items-center gap-1 p-1 bg-black/60 backdrop-blur-md rounded-lg border border-white/10 text-xs">
+        {/* Action Toolbar */}
+        <div className="flex items-center gap-2">
+          {onOpenLibraryModal && (
+            <button
+              onClick={onOpenLibraryModal}
+              title="Pozu Fotoğraflı Kaydet / Kütüphane"
+              className="px-2.5 py-1.5 bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-500/30 rounded-lg text-xs font-semibold text-cyan-300 flex items-center gap-1.5 shadow backdrop-blur-md transition-all cursor-pointer"
+            >
+              <RotateCcw className="w-3.5 h-3.5 hidden" />
+              <span>📸 Pozu Kaydet</span>
+            </button>
+          )}
+
+          {/* Gizmo Controls Toolbar */}
+          <div className="flex items-center gap-1 p-1 bg-black/60 backdrop-blur-md rounded-lg border border-white/10 text-xs">
           <button
             onClick={() => onSetGizmoMode('rotate')}
             title="Rotate Joint (FK)"
@@ -100,6 +169,7 @@ export const ViewportHUD: React.FC<ViewportHUDProps> = ({
             {transformSpace}
           </button>
         </div>
+      </div>
 
         {/* Framing Guides Selector */}
         <div className="hidden md:flex items-center gap-1 p-1 bg-black/60 backdrop-blur-md rounded-lg border border-white/10 text-[11px]">

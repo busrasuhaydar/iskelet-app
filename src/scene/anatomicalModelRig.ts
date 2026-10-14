@@ -46,14 +46,14 @@ export const ANATOMICAL_HIERARCHY_DEFS: AnatomicalJointDef[] = [
     key: 'spine_cervical',
     label: 'Boyun Omurları (Cervical Spine C1-C7)',
     category: 'spine',
-    worldPivot: [0.0, 1.532, -0.023],
+    worldPivot: [0.0, 1.500, -0.023],
     parentKey: 'spine_thoracic',
   },
   {
     key: 'head',
     label: 'Kafatası (Cranium & Skull)',
     category: 'head',
-    worldPivot: [0.0, 1.568, -0.036],
+    worldPivot: [0.0, 1.570, -0.036],
     parentKey: 'spine_cervical',
   },
   {
@@ -81,16 +81,16 @@ export const ANATOMICAL_HIERARCHY_DEFS: AnatomicalJointDef[] = [
   },
   {
     key: 'lower_arm_L',
-    label: 'Sol Ön Kol (Radius & Ulna L)',
+    label: 'Sol Dirsek & Ön Kol (Radius & Ulna L)',
     category: 'arm_L',
-    worldPivot: [0.217, 0.84, -0.018],
+    worldPivot: [0.216, 1.100, -0.020],
     parentKey: 'shoulder_L',
   },
   {
     key: 'wrist_L',
     label: 'Sol El & Parmaklar (Hand L)',
     category: 'arm_L',
-    worldPivot: [0.188, 0.718, -0.008],
+    worldPivot: [0.209, 0.844, -0.010],
     parentKey: 'lower_arm_L',
   },
 
@@ -111,16 +111,16 @@ export const ANATOMICAL_HIERARCHY_DEFS: AnatomicalJointDef[] = [
   },
   {
     key: 'lower_arm_R',
-    label: 'Sağ Ön Kol (Radius & Ulna R)',
+    label: 'Sağ Dirsek & Ön Kol (Radius & Ulna R)',
     category: 'arm_R',
-    worldPivot: [-0.217, 0.84, -0.018],
+    worldPivot: [-0.216, 1.100, -0.020],
     parentKey: 'shoulder_R',
   },
   {
     key: 'wrist_R',
     label: 'Sağ El & Parmaklar (Hand R)',
     category: 'arm_R',
-    worldPivot: [-0.188, 0.718, -0.008],
+    worldPivot: [-0.209, 0.844, -0.010],
     parentKey: 'lower_arm_R',
   },
 
@@ -306,28 +306,38 @@ export function setupAnatomicalModelRig(
     processedGeomMap.set(name, processModelGeometry(mesh));
   });
 
-  // 1. Create Joint Pivot Groups
-  const jointGroupMap = new Map<JointKey, THREE.Group>();
+  // 1. Create Joint Pivot Groups & Bones
+  // Pelvis, Lumbar, Thoracic, Cervical, and Head are THREE.Bones to power the continuous elastic SkinnedMesh spine.
+  const jointGroupMap = new Map<JointKey, THREE.Object3D>();
   const jointSpecMap = new Map<JointKey, AnatomicalJointDef>();
 
+  const spineBoneKeys: JointKey[] = ['pelvis', 'spine_lumbar', 'spine_thoracic', 'spine_cervical', 'head'];
+  const spineBones: THREE.Bone[] = [];
+
   ANATOMICAL_HIERARCHY_DEFS.forEach((def) => {
-    const group = new THREE.Group();
-    group.name = `Joint_${def.key}`;
-    jointGroupMap.set(def.key, group);
+    const isSpineBone = spineBoneKeys.includes(def.key);
+    const node = isSpineBone ? new THREE.Bone() : new THREE.Group();
+    node.name = `Joint_${def.key}`;
+    jointGroupMap.set(def.key, node);
     jointSpecMap.set(def.key, def);
 
-    bones.set(def.key, group);
-    bones.set(def.label, group);
-    jointKeyToBone.set(def.key, group);
+    bones.set(def.key, node);
+    bones.set(def.label, node);
+    jointKeyToBone.set(def.key, node);
     boneNameToJointKey.set(def.key, def.key);
 
     boneList.push({
       name: def.key,
-      node: group,
+      node,
       matchedKey: def.key,
       label: def.label,
       category: def.category,
     });
+  });
+
+  // Collect the 5 spine bones in exact anatomical order
+  spineBoneKeys.forEach((key) => {
+    spineBones.push(jointGroupMap.get(key) as THREE.Bone);
   });
 
   // 2. Assemble Parent-Child Forward Kinematics Hierarchy
@@ -349,7 +359,15 @@ export function setupAnatomicalModelRig(
     }
   });
 
-  // Helper to attach geometry to a joint group
+  // Clear existing raw children and mount kinematic pelvis root first so matrices can update
+  while (modelGroup.children.length > 0) {
+    modelGroup.remove(modelGroup.children[0]);
+  }
+  const pelvisRoot = jointGroupMap.get('pelvis')!;
+  modelGroup.add(pelvisRoot);
+  modelGroup.updateMatrixWorld(true);
+
+  // Helper to attach rigid geometry to a joint group
   const attachMeshToJoint = (
     geom: THREE.BufferGeometry,
     jointKey: JointKey,
@@ -361,16 +379,21 @@ export function setupAnatomicalModelRig(
     const jointGroup = jointGroupMap.get(jointKey)!;
     const [jx, jy, jz] = spec.worldPivot;
 
+    geom.computeVertexNormals();
+    geom.computeBoundingBox();
+    geom.computeBoundingSphere();
+
     const mesh = new THREE.Mesh(geom, material);
     mesh.name = meshName;
     mesh.castShadow = true;
     mesh.receiveShadow = true;
+    mesh.frustumCulled = false; // Never cull bones from any camera angle
     (mesh as any).isChromeMesh = true;
 
     // Center mesh origin on this joint's socket pivot
     mesh.position.set(-jx, -jy, -jz);
 
-    // Raycast picking metadata: clicking this bone selects the joint!
+    // Raycast picking metadata
     mesh.userData = {
       figureId,
       jointKey,
@@ -401,45 +424,153 @@ export function setupAnatomicalModelRig(
   };
 
   // ==========================================
-  // 3. ATTACH CENTRAL AXIAL SKELETON
+  // 3. ELASTIC SPINE SKINNED MESH (NEVER BREAKS)
+  // ==========================================
+  // Using Three.js SkinnedMesh with smoothstep skin weights across pelvis -> lumbar -> thoracic -> cervical -> head.
+  // When spine joints rotate, the column curves organically without any breaking or separation!
+  const spineSkeleton = new THREE.Skeleton(spineBones);
+
+  function smoothstep(min: number, max: number, value: number) {
+    const x = Math.max(0, Math.min(1, (value - min) / (max - min)));
+    return x * x * (3 - 2 * x);
+  }
+
+  // Full vertebral column (Object_5)
+  if (processedGeomMap.has('Object_5')) {
+    const rawSpineGeom = processedGeomMap.get('Object_5')!;
+    const spineGeom = rawSpineGeom.clone();
+    const pos = spineGeom.attributes.position;
+    const count = pos.count;
+
+    const skinIndices = new Uint16Array(count * 4);
+    const skinWeights = new Float32Array(count * 4);
+
+    for (let i = 0; i < count; i++) {
+      const y = pos.getY(i);
+      let b0 = 0, b1 = 1, w1 = 0, w0 = 1;
+
+      if (y < 1.084) {
+        // Pelvis (0) -> Lumbar (1)
+        const t = smoothstep(0.97, 1.084, y);
+        b0 = 0; b1 = 1; w1 = t; w0 = 1 - t;
+      } else if (y < 1.25) {
+        // Lumbar (1) -> Thoracic (2)
+        const t = smoothstep(1.084, 1.25, y);
+        b0 = 1; b1 = 2; w1 = t; w0 = 1 - t;
+      } else if (y < 1.50) {
+        // Thoracic (2) -> Cervical (3)
+        const t = smoothstep(1.25, 1.50, y);
+        b0 = 2; b1 = 3; w1 = t; w0 = 1 - t;
+      } else {
+        // Cervical (3) -> Head socket (4)
+        const t = smoothstep(1.50, 1.62, y);
+        b0 = 3; b1 = 4; w1 = t; w0 = 1 - t;
+      }
+
+      const off = i * 4;
+      skinIndices[off] = b0;
+      skinIndices[off + 1] = b1;
+      skinIndices[off + 2] = 0;
+      skinIndices[off + 3] = 0;
+
+      skinWeights[off] = w0;
+      skinWeights[off + 1] = w1;
+      skinWeights[off + 2] = 0;
+      skinWeights[off + 3] = 0;
+    }
+
+    spineGeom.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(skinIndices, 4));
+    spineGeom.setAttribute('skinWeight', new THREE.Float32BufferAttribute(skinWeights, 4));
+    spineGeom.computeVertexNormals();
+    spineGeom.computeBoundingBox();
+    spineGeom.computeBoundingSphere();
+
+    const spineSkinnedMesh = new THREE.SkinnedMesh(spineGeom, material);
+    spineSkinnedMesh.name = 'Vertebral_Spine_Column';
+    spineSkinnedMesh.castShadow = true;
+    spineSkinnedMesh.receiveShadow = true;
+    spineSkinnedMesh.frustumCulled = false;
+    (spineSkinnedMesh as any).isChromeMesh = true;
+
+    spineSkinnedMesh.userData = {
+      figureId,
+      jointKey: 'spine_thoracic',
+      boneName: 'Omurga Sütunu (Elastik Vertebra Kolonu)',
+      isSkinnedSpine: true,
+    };
+
+    modelGroup.add(spineSkinnedMesh);
+    spineSkinnedMesh.bind(spineSkeleton);
+    boneMeshes.push(spineSkinnedMesh);
+  }
+
+  // Cervical detailing vertebrae (Object_14) - smoothly skinned between Cervical (3) and Head (4)
+  if (processedGeomMap.has('Object_14')) {
+    const rawCervicalGeom = processedGeomMap.get('Object_14')!;
+    const cervicalGeom = rawCervicalGeom.clone();
+    const pos = cervicalGeom.attributes.position;
+    const count = pos.count;
+
+    const skinIndices = new Uint16Array(count * 4);
+    const skinWeights = new Float32Array(count * 4);
+
+    for (let i = 0; i < count; i++) {
+      const y = pos.getY(i);
+      const t = smoothstep(1.52, 1.575, y);
+      const off = i * 4;
+      skinIndices[off] = 3; // Cervical
+      skinIndices[off + 1] = 4; // Head
+      skinIndices[off + 2] = 0;
+      skinIndices[off + 3] = 0;
+      skinWeights[off] = 1 - t;
+      skinWeights[off + 1] = t;
+      skinWeights[off + 2] = 0;
+      skinWeights[off + 3] = 0;
+    }
+
+    cervicalGeom.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(skinIndices, 4));
+    cervicalGeom.setAttribute('skinWeight', new THREE.Float32BufferAttribute(skinWeights, 4));
+    cervicalGeom.computeVertexNormals();
+    cervicalGeom.computeBoundingBox();
+    cervicalGeom.computeBoundingSphere();
+
+    const cervicalSkinnedMesh = new THREE.SkinnedMesh(cervicalGeom, material);
+    cervicalSkinnedMesh.name = 'Cervical_Vertebrae_Skinned';
+    cervicalSkinnedMesh.castShadow = true;
+    cervicalSkinnedMesh.receiveShadow = true;
+    cervicalSkinnedMesh.frustumCulled = false;
+    (cervicalSkinnedMesh as any).isChromeMesh = true;
+
+    cervicalSkinnedMesh.userData = {
+      figureId,
+      jointKey: 'spine_cervical',
+      boneName: 'Boyun Omurları (Cervical Spine C1-C7)',
+      isSkinnedSpine: true,
+    };
+
+    modelGroup.add(cervicalSkinnedMesh);
+    cervicalSkinnedMesh.bind(spineSkeleton);
+    boneMeshes.push(cervicalSkinnedMesh);
+  }
+
+  // ==========================================
+  // 4. ATTACH CENTRAL AXIAL SKELETON
   // ==========================================
 
-  // Pelvis / Sacrum (Object_12)
+  // Pelvis / Sacrum (Object_12) attached to pelvis root
   if (processedGeomMap.has('Object_12')) {
     attachMeshToJoint(processedGeomMap.get('Object_12')!, 'pelvis', 'Pelvis_Sacrum');
   }
 
-  // Lumbar Spine (lower part of Object_5, Y < 1.18)
-  if (processedGeomMap.has('Object_5')) {
-    const lumbarSpineGeom = extractSubGeometry(processedGeomMap.get('Object_5')!, (_x, y) => y < 1.18);
-    attachMeshToJoint(lumbarSpineGeom, 'spine_lumbar', 'Lumbar_Spine');
-  }
-
-  // Thoracic Spine, Ribs & Sternum (Object_4 is Rib Cage!, Object_16 is Sternum!, mid of Object_5 is Thoracic Spine)
+  // Thorax Rib Cage & Sternum attached to thoracic spine
   if (processedGeomMap.has('Object_4')) {
     attachMeshToJoint(processedGeomMap.get('Object_4')!, 'spine_thoracic', 'Rib_Cage');
   }
   if (processedGeomMap.has('Object_16')) {
     attachMeshToJoint(processedGeomMap.get('Object_16')!, 'spine_thoracic', 'Sternum');
   }
-  if (processedGeomMap.has('Object_5')) {
-    const thoracicSpineGeom = extractSubGeometry(
-      processedGeomMap.get('Object_5')!,
-      (_x, y) => y >= 1.18 && y < 1.45
-    );
-    attachMeshToJoint(thoracicSpineGeom, 'spine_thoracic', 'Thoracic_Spine_Column');
-  }
 
-  // Cervical Spine (Object_14 & top of Object_5)
-  if (processedGeomMap.has('Object_14')) {
-    attachMeshToJoint(processedGeomMap.get('Object_14')!, 'spine_cervical', 'Cervical_Vertebrae');
-  }
-  if (processedGeomMap.has('Object_5')) {
-    const cervicalSpineGeom = extractSubGeometry(processedGeomMap.get('Object_5')!, (_x, y) => y >= 1.45);
-    attachMeshToJoint(cervicalSpineGeom, 'spine_cervical', 'Cervical_Spine_Column');
-  }
-
-  // Head / Skull (Object_11 & Object_15)
+  // Head / Cranium / Skull (Object_11) & Upper Teeth Maxilla (Object_15) firmly attached to Head socket
   if (processedGeomMap.has('Object_11')) {
     attachMeshToJoint(processedGeomMap.get('Object_11')!, 'head', 'Cranium_Skull');
   }
@@ -447,30 +578,57 @@ export function setupAnatomicalModelRig(
     attachMeshToJoint(processedGeomMap.get('Object_15')!, 'head', 'Maxilla_Upper_Teeth');
   }
 
-  // Mandible / Jaw (Object_3)
+  // Mandible / Jaw (Object_3) attached to Jaw joint
   if (processedGeomMap.has('Object_3')) {
     attachMeshToJoint(processedGeomMap.get('Object_3')!, 'jaw', 'Mandible_Jaw');
   }
 
   // ==========================================
-  // 4. ATTACH UPPER LIMBS (ARMS)
+  // 5. ATTACH UPPER LIMBS (ARMS)
   // ==========================================
 
   // Clavicles (Object_19) & Scapulae (Object_6)
   attachBilateral('Object_19', 'clavicle_L', 'clavicle_R', 'Clavicle');
   attachBilateral('Object_6', 'clavicle_L', 'clavicle_R', 'Scapula');
 
-  // Humerus (Object_9 is Humerus Head/Upper!, Object_10 is Humerus Lower!, Object_18 is Humerus Shaft!)
+  // Upper Arm (Humerus): Object_9
   attachBilateral('Object_9', 'shoulder_L', 'shoulder_R', 'Humerus_Upper');
-  attachBilateral('Object_10', 'shoulder_L', 'shoulder_R', 'Humerus_Lower');
-  attachBilateral('Object_18', 'shoulder_L', 'shoulder_R', 'Humerus_Shaft');
 
-  // Forearm & Hand (Object_17): Split at wrist line (Y = 0.718m)
-  attachBilateral('Object_17', 'lower_arm_L', 'lower_arm_R', 'Forearm_Radius_Ulna', (y) => y >= 0.718);
-  attachBilateral('Object_17', 'wrist_L', 'wrist_R', 'Hand_Digits', (y) => y < 0.718);
+  // Forearm (Radius & Ulna): Object_10 and Object_18 attached to Elbow joint!
+  attachBilateral('Object_10', 'lower_arm_L', 'lower_arm_R', 'Ulna_Forearm');
+  attachBilateral('Object_18', 'lower_arm_L', 'lower_arm_R', 'Radius_Forearm');
+
+  // Clickable Joint Hotspots at Elbow sockets for instant direct viewport clicking
+  ['lower_arm_L', 'lower_arm_R'].forEach((elKey) => {
+    const elGroup = jointGroupMap.get(elKey as JointKey);
+    if (elGroup) {
+      const isL = elKey === 'lower_arm_L';
+      const elGeom = new THREE.SphereGeometry(0.075, 16, 16);
+      const elMat = new THREE.MeshBasicMaterial({
+        color: 0x00f0ff,
+        transparent: true,
+        opacity: 0.002,
+        depthWrite: false,
+      });
+      const elHitMesh = new THREE.Mesh(elGeom, elMat);
+      elHitMesh.name = `Elbow_Socket_Picker_${isL ? 'L' : 'R'}`;
+      elHitMesh.position.set(0, 0, 0); // Exact elbow socket center
+      elHitMesh.userData = {
+        figureId,
+        jointKey: elKey,
+        boneName: isL ? 'Sol Dirsek & Ön Kol (Elbow L)' : 'Sağ Dirsek & Ön Kol (Elbow R)',
+        isElbowPicker: true,
+      };
+      elGroup.add(elHitMesh);
+      boneMeshes.push(elHitMesh);
+    }
+  });
+
+  // Hand & Digits: Object_17 attached to Wrist joint!
+  attachBilateral('Object_17', 'wrist_L', 'wrist_R', 'Hand_Digits');
 
   // ==========================================
-  // 5. ATTACH LOWER LIMBS (LEGS)
+  // 6. ATTACH LOWER LIMBS (LEGS)
   // ==========================================
 
   // Femur (Object_13)
@@ -483,17 +641,6 @@ export function setupAnatomicalModelRig(
 
   // Feet (Object_8)
   attachBilateral('Object_8', 'ankle_L', 'ankle_R', 'Foot_Digits');
-
-  // ==========================================
-  // 6. ASSEMBLE MODEL ROOT
-  // ==========================================
-  const pelvisRoot = jointGroupMap.get('pelvis')!;
-
-  // Clear existing raw children and mount kinematic pelvis root
-  while (modelGroup.children.length > 0) {
-    modelGroup.remove(modelGroup.children[0]);
-  }
-  modelGroup.add(pelvisRoot);
 
   return { bones, boneList, boneMeshes, jointKeyToBone, boneNameToJointKey };
 }

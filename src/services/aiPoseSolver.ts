@@ -220,11 +220,11 @@ export class AIPoseSolver {
             position: [0.22, 0, 0],
             rotation: [0, -100, 0],
             joints: this.sanitizeJointAngles({
-              ...BUILTIN_POSE_TEMPLATES['dance_waltz'].joints,
+              ...BUILTIN_POSE_TEMPLATES['dynamic_walk']?.joints,
               shoulder_L: { x: -55, y: 20, z: -25 },
-              lower_arm_L: { x: 60, y: 10, z: 0 },
+              lower_arm_L: { x: -60, y: 10, z: 0 },
               shoulder_R: { x: -35, y: -15, z: 15 },
-              lower_arm_R: { x: 80, y: -20, z: 0 },
+              lower_arm_R: { x: -80, y: -20, z: 0 },
             } as any),
           },
         ],
@@ -244,7 +244,7 @@ export class AIPoseSolver {
             rotation: [0, 10, 0],
             joints: this.sanitizeJointAngles({
               shoulder_L: { x: -20, y: 15, z: -15 },
-              lower_arm_L: { x: 45, y: 20, z: 0 },
+              lower_arm_L: { x: -45, y: 20, z: 0 },
             } as any),
           },
           {
@@ -253,7 +253,7 @@ export class AIPoseSolver {
             rotation: [0, -10, 0],
             joints: this.sanitizeJointAngles({
               shoulder_R: { x: -20, y: -15, z: 15 },
-              lower_arm_R: { x: 45, y: -20, z: 0 },
+              lower_arm_R: { x: -45, y: -20, z: 0 },
             } as any),
           },
         ],
@@ -299,20 +299,20 @@ export class AIPoseSolver {
       if (p.includes('left arm') || p.includes('left hand') || p.includes('sol kol') || p.includes('sol el')) {
         if (p.includes('higher') || p.includes('up') || p.includes('raise') || p.includes('lift') || p.includes('kaldır') || p.includes('yukarı')) {
           jointDiffs['shoulder_L'] = { x: -65, y: 15, z: 35 };
-          jointDiffs['lower_arm_L'] = { x: 35, y: 20, z: 0 };
+          jointDiffs['lower_arm_L'] = { x: -35, y: 20, z: 0 };
         } else if (p.includes('lower') || p.includes('down') || p.includes('indir') || p.includes('aşağı')) {
           jointDiffs['shoulder_L'] = { x: 0, y: 0, z: -25 };
-          jointDiffs['lower_arm_L'] = { x: 10, y: 0, z: 0 };
+          jointDiffs['lower_arm_L'] = { x: -10, y: 0, z: 0 };
         }
       }
 
       if (p.includes('right arm') || p.includes('right hand') || p.includes('sağ kol') || p.includes('sağ el')) {
         if (p.includes('higher') || p.includes('up') || p.includes('raise') || p.includes('lift') || p.includes('kaldır') || p.includes('yukarı')) {
           jointDiffs['shoulder_R'] = { x: -65, y: -15, z: -35 };
-          jointDiffs['lower_arm_R'] = { x: 35, y: -20, z: 0 };
+          jointDiffs['lower_arm_R'] = { x: -35, y: -20, z: 0 };
         } else if (p.includes('lower') || p.includes('down') || p.includes('indir') || p.includes('aşağı')) {
           jointDiffs['shoulder_R'] = { x: 0, y: 0, z: 25 };
-          jointDiffs['lower_arm_R'] = { x: 10, y: 0, z: 0 };
+          jointDiffs['lower_arm_R'] = { x: -10, y: 0, z: 0 };
         }
       }
 

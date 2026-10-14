@@ -2,8 +2,8 @@ import React from 'react';
 import { Camera, ShieldCheck, Download, Sparkles, BookOpen, Upload } from 'lucide-react';
 
 interface HeaderProps {
-  activeTab: 'viewport' | 'materials' | 'lighting' | 'library' | 'tests';
-  setActiveTab: (tab: 'viewport' | 'materials' | 'lighting' | 'library' | 'tests') => void;
+  activeTab: 'viewport' | 'materials' | 'scene' | 'lighting' | 'library' | 'tests';
+  setActiveTab: (tab: 'viewport' | 'materials' | 'scene' | 'lighting' | 'library' | 'tests') => void;
   onOpenExport: () => void;
   onOpenLibrary: () => void;
   onOpenTests: () => void;
@@ -33,11 +33,11 @@ export const Header: React.FC<HeaderProps> = ({
       </div>
 
       {/* Zone 2: Navigation tabs / tool modes */}
-      <nav className="hidden md:flex items-center gap-6 text-xs font-medium text-slate-400">
+      <nav className="hidden md:flex items-center gap-5 text-xs font-medium text-slate-400">
         <button
           onClick={() => setActiveTab('viewport')}
           className={`hover:text-slate-100 transition-colors whitespace-nowrap shrink-0 ${
-            activeTab === 'viewport' ? 'text-slate-100 font-semibold' : ''
+            activeTab === 'viewport' ? 'text-cyan-300 font-semibold border-b border-cyan-400 pb-0.5' : ''
           }`}
         >
           Studio Viewport
@@ -45,18 +45,26 @@ export const Header: React.FC<HeaderProps> = ({
         <button
           onClick={() => setActiveTab('materials')}
           className={`hover:text-slate-100 transition-colors whitespace-nowrap shrink-0 ${
-            activeTab === 'materials' ? 'text-slate-100 font-semibold' : ''
+            activeTab === 'materials' ? 'text-cyan-300 font-semibold border-b border-cyan-400 pb-0.5' : ''
           }`}
         >
-          Chrome Finishes
+          Krom & Renkler
+        </button>
+        <button
+          onClick={() => setActiveTab('scene')}
+          className={`hover:text-slate-100 transition-colors whitespace-nowrap shrink-0 ${
+            activeTab === 'scene' ? 'text-cyan-300 font-semibold border-b border-cyan-400 pb-0.5' : ''
+          }`}
+        >
+          Sahne & Gökyüzü / Deniz
         </button>
         <button
           onClick={() => setActiveTab('lighting')}
           className={`hover:text-slate-100 transition-colors whitespace-nowrap shrink-0 ${
-            activeTab === 'lighting' ? 'text-slate-100 font-semibold' : ''
+            activeTab === 'lighting' ? 'text-cyan-300 font-semibold border-b border-cyan-400 pb-0.5' : ''
           }`}
         >
-          Studio Lighting
+          Stüdyo Işıkları
         </button>
         <button
           onClick={() => {

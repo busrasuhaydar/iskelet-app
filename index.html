@@ -12,6 +12,85 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <script>
+      // 1. Intercept WebSocket constructor to cleanly neutralize Vite HMR in cloud preview/iframe
+      (function () {
+        var NativeWebSocket = window.WebSocket;
+        if (NativeWebSocket) {
+          window.WebSocket = function (url, protocols) {
+            if (
+              typeof url === 'string' &&
+              (url.indexOf('vite') !== -1 ||
+                url.indexOf('token=') !== -1 ||
+                url.indexOf(':3000') !== -1 ||
+                url.indexOf('run.app') !== -1)
+            ) {
+              // Return silent dummy WebSocket object that never throws or logs connection errors
+              var dummy = {
+                url: url,
+                readyState: 3, // CLOSED
+                bufferedAmount: 0,
+                extensions: '',
+                protocol: '',
+                binaryType: 'blob',
+                send: function () {},
+                close: function () {},
+                addEventListener: function () {},
+                removeEventListener: function () {},
+                dispatchEvent: function () {
+                  return false;
+                },
+                onopen: null,
+                onmessage: null,
+                onerror: null,
+                onclose: null,
+              };
+              return dummy;
+            }
+            return new NativeWebSocket(url, protocols);
+          };
+          window.WebSocket.prototype = NativeWebSocket.prototype;
+          window.WebSocket.CONNECTING = 0;
+          window.WebSocket.OPEN = 1;
+          window.WebSocket.CLOSING = 2;
+          window.WebSocket.CLOSED = 3;
+        }
+
+        // 2. Global event listeners to suppress any lingering Vite/WS rejection or error
+        window.addEventListener(
+          'unhandledrejection',
+          function (e) {
+            var str =
+              (e && e.reason && (e.reason.message || e.reason.stack || '' + e.reason)) || '';
+            if (
+              str.indexOf('WebSocket') !== -1 ||
+              str.indexOf('closed without opened') !== -1 ||
+              str.indexOf('@vite/client') !== -1
+            ) {
+              e.preventDefault && e.preventDefault();
+              e.stopImmediatePropagation && e.stopImmediatePropagation();
+            }
+          },
+          true
+        );
+
+        window.addEventListener(
+          'error',
+          function (e) {
+            var str = (e && (e.message || (e.error && e.error.message) || '')) || '';
+            if (
+              str.indexOf('WebSocket') !== -1 ||
+              str.indexOf('closed without opened') !== -1 ||
+              str.indexOf('@vite/client') !== -1
+            ) {
+              e.preventDefault && e.preventDefault();
+              e.stopImmediatePropagation && e.stopImmediatePropagation();
+            }
+          },
+          true
+        );
+      })();
+    </script>
   </head>
   <body class="bg-[#0b0c10] text-slate-100 antialiased overflow-hidden select-none">
     <div id="root"></div>

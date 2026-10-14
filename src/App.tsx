@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { ChromeStudio } from './scene/ChromeStudio';
 import { SkeletonRig } from './scene/SkeletonRig';
 import {
@@ -9,6 +9,9 @@ import {
   GizmoMode,
   TransformSpace,
   SkeletonFigureData,
+  SavedPoseRecord,
+  FigurePose,
+  AnimationPlayerState,
 } from './types/skeleton';
 import { CHROME_MATERIAL_PRESETS, DEFAULT_NEUTRAL_POSE } from './scene/jointDefinitions';
 import { Header } from './components/Header';
@@ -23,7 +26,12 @@ import { ImportModelModal } from './components/ImportModelModal';
 import { DriveModelConnector } from './components/DriveModelConnector';
 import { AcceptanceTestRunner } from './services/acceptanceTests';
 import { AIPoseSolver } from './services/aiPoseSolver';
-import { BUILTIN_POSE_TEMPLATES } from './services/poseLibrary';
+import {
+  BUILTIN_POSE_TEMPLATES,
+  getSavedCustomPoses,
+  saveCustomPoseRecord,
+  deleteCustomPoseRecord,
+} from './services/poseLibrary';
 import { PanelLeft, PanelRight } from 'lucide-react';
 
 export default function App() {
@@ -32,7 +40,7 @@ export default function App() {
   const runnerRef = useRef<AcceptanceTestRunner | null>(null);
 
   // App UI state
-  const [activeTab, setActiveTab] = useState<'viewport' | 'materials' | 'lighting' | 'library' | 'tests'>('viewport');
+  const [activeTab, setActiveTab] = useState<'viewport' | 'materials' | 'scene' | 'lighting' | 'library' | 'tests'>('viewport');
   const [figuresList, setFiguresList] = useState<SkeletonRig[]>([]);
   const [activeFigureId, setActiveFigureId] = useState<string | null>(null);
   const [selectedJointKey, setSelectedJointKey] = useState<JointKey | null>(null);
@@ -47,20 +55,100 @@ export default function App() {
   const [showLeftDrawer, setShowLeftDrawer] = useState(true);
   const [showRightDrawer, setShowRightDrawer] = useState(true);
 
-  // Undo / Redo history stack
-  const [history, setHistory] = useState<any[]>([]);
-  const [historyIndex, setHistoryIndex] = useState(-1);
+  // Undo / Redo history stack (Ref-based to prevent stale closure corruption)
+  const historyRef = useRef<Array<Array<{ id: string; pose: FigurePose }>>>([]);
+  const historyIndexRef = useRef<number>(-1);
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
+  const rafSyncRef = useRef<number | null>(null);
 
   // AI Pose state
   const [isAILoading, setIsAILoading] = useState(false);
   const [lastAIExplanation, setLastAIExplanation] = useState<string | null>(null);
   const [lastAISource, setLastAISource] = useState<'gemini-3.8-flash' | 'local_solver' | null>(null);
 
+  // Motion-Capture Animation Studio state
+  const [animationPlayerState, setAnimationPlayerState] = useState<AnimationPlayerState>({
+    currentClipId: null,
+    clipName: '',
+    isPlaying: false,
+    currentTime: 0,
+    duration: 0,
+    playbackSpeed: 1.0,
+    loop: true,
+    rootMotion: true,
+  });
+
   // Modals
   const [isExportOpen, setIsExportOpen] = useState(false);
   const [isLibraryOpen, setIsLibraryOpen] = useState(false);
   const [isTestsOpen, setIsTestsOpen] = useState(false);
   const [isImportOpen, setIsImportOpen] = useState(false);
+
+  // Saved Custom Poses with Photo Thumbnails
+  const [savedPoses, setSavedPoses] = useState<SavedPoseRecord[]>(() => getSavedCustomPoses());
+  const [previewThumbnail, setPreviewThumbnail] = useState<string>('');
+
+  // Helper to snapshot scene state for undo/redo
+  const captureSceneSnapshot = (studio: ChromeStudio) => {
+    return Array.from(studio.figures.values()).map((rig) => ({
+      id: rig.id,
+      pose: JSON.parse(JSON.stringify(rig.currentPose)),
+    }));
+  };
+
+  const pushHistoryState = useCallback(() => {
+    if (!studioRef.current) return;
+    const snap = captureSceneSnapshot(studioRef.current);
+    const currIdx = historyIndexRef.current;
+    const newHistory = historyRef.current.slice(0, currIdx + 1);
+    newHistory.push(snap);
+    if (newHistory.length > 50) newHistory.shift();
+    historyRef.current = newHistory;
+    historyIndexRef.current = newHistory.length - 1;
+    setCanUndo(historyIndexRef.current > 0);
+    setCanRedo(false);
+  }, []);
+
+  const applySceneSnapshot = useCallback((snap: any[]) => {
+    if (!studioRef.current || !Array.isArray(snap) || snap.length === 0) return;
+    snap.forEach((item) => {
+      if (!item || !item.id) return;
+      const rig = studioRef.current?.figures.get(item.id);
+      if (rig && item.pose) {
+        rig.applyPose(item.pose);
+      }
+    });
+    setFiguresList(Array.from(studioRef.current.figures.values()));
+  }, []);
+
+  const handleUndo = useCallback(() => {
+    if (!studioRef.current) return;
+    const currIdx = historyIndexRef.current;
+    if (currIdx <= 0) return;
+    const targetIdx = currIdx - 1;
+    const targetSnap = historyRef.current[targetIdx];
+    if (Array.isArray(targetSnap) && targetSnap.length > 0) {
+      applySceneSnapshot(targetSnap);
+      historyIndexRef.current = targetIdx;
+      setCanUndo(targetIdx > 0);
+      setCanRedo(targetIdx < historyRef.current.length - 1);
+    }
+  }, [applySceneSnapshot]);
+
+  const handleRedo = useCallback(() => {
+    if (!studioRef.current) return;
+    const currIdx = historyIndexRef.current;
+    if (currIdx >= historyRef.current.length - 1) return;
+    const targetIdx = currIdx + 1;
+    const targetSnap = historyRef.current[targetIdx];
+    if (Array.isArray(targetSnap) && targetSnap.length > 0) {
+      applySceneSnapshot(targetSnap);
+      historyIndexRef.current = targetIdx;
+      setCanUndo(targetIdx > 0);
+      setCanRedo(targetIdx < historyRef.current.length - 1);
+    }
+  }, [applySceneSnapshot]);
 
   // 1. Initialize ChromeStudio on mount
   useEffect(() => {
@@ -77,8 +165,15 @@ export default function App() {
         pushHistoryState();
       },
       onTransformChanged: () => {
-        // Trigger React re-render so UI sliders track gizmo in real time
-        setFiguresList((prev) => [...prev]);
+        // High performance real-time slider tracking throttled with RAF
+        if (rafSyncRef.current) return;
+        rafSyncRef.current = requestAnimationFrame(() => {
+          rafSyncRef.current = null;
+          setFiguresList((prev) => [...prev]);
+        });
+      },
+      onAnimationUpdate: (animState) => {
+        setAnimationPlayerState(animState);
       },
     });
 
@@ -125,6 +220,13 @@ export default function App() {
           });
           setFiguresList([mainRig]);
           setActiveFigureId(mainRig.id);
+
+          // Initialize history stack with the full anatomical skeleton
+          const snap = captureSceneSnapshot(studio);
+          historyRef.current = [snap];
+          historyIndexRef.current = 0;
+          setCanUndo(false);
+          setCanRedo(false);
         }
       })
       .catch((err) => {
@@ -133,56 +235,16 @@ export default function App() {
 
     // Initial snapshot in history
     const initialSnapshot = captureSceneSnapshot(studio);
-    setHistory([initialSnapshot]);
-    setHistoryIndex(0);
+    historyRef.current = [initialSnapshot];
+    historyIndexRef.current = 0;
+    setCanUndo(false);
+    setCanRedo(false);
 
     return () => {
       studio.dispose();
       studioRef.current = null;
     };
-  }, []);
-
-  // Helper to snapshot scene state for undo/redo
-  const captureSceneSnapshot = (studio: ChromeStudio) => {
-    return Array.from(studio.figures.values()).map((rig) => ({
-      id: rig.id,
-      pose: JSON.parse(JSON.stringify(rig.currentPose)),
-    }));
-  };
-
-  const pushHistoryState = () => {
-    if (!studioRef.current) return;
-    const snap = captureSceneSnapshot(studioRef.current);
-    setHistory((prev) => {
-      const trimmed = prev.slice(0, historyIndex + 1);
-      return [...trimmed, snap];
-    });
-    setHistoryIndex((prev) => prev + 1);
-  };
-
-  const handleUndo = () => {
-    if (historyIndex <= 0 || !studioRef.current) return;
-    const targetSnap = history[historyIndex - 1];
-    applySceneSnapshot(targetSnap);
-    setHistoryIndex(historyIndex - 1);
-  };
-
-  const handleRedo = () => {
-    if (historyIndex >= history.length - 1 || !studioRef.current) return;
-    const targetSnap = history[historyIndex + 1];
-    applySceneSnapshot(targetSnap);
-    setHistoryIndex(historyIndex + 1);
-  };
-
-  const applySceneSnapshot = (snap: any[]) => {
-    if (!studioRef.current) return;
-    snap.forEach((item) => {
-      const rig = studioRef.current?.figures.get(item.id);
-      if (rig) {
-        rig.applyPose(item.pose);
-      }
-    });
-  };
+  }, [pushHistoryState]);
 
   // ==========================================
   // FIGURE ACTIONS
@@ -197,22 +259,64 @@ export default function App() {
 
   const handleAddFigure = () => {
     if (!studioRef.current) return;
-    const newId = `figure_${Date.now()}`;
-    const newFigureData: SkeletonFigureData = {
-      id: newId,
-      name: `Chrome Skeleton ${studioRef.current.figures.size + 1}`,
-      visible: true,
-      locked: false,
-      ikEnabled: false,
-      enforceJointLimits: true,
-      material: { ...CHROME_MATERIAL_PRESETS.rainbow_chrome },
-      pose: {
-        ...JSON.parse(JSON.stringify(DEFAULT_NEUTRAL_POSE)),
-        position: [0.65, 0, 0],
-      },
-    };
+    const nextIdx = studioRef.current.figures.size + 1;
+    const offset = 0.65 * (studioRef.current.figures.size % 2 === 0 ? 1 : -1) * Math.ceil(studioRef.current.figures.size / 2);
 
-    const rig = studioRef.current.addFigure(newFigureData);
+    let rig: SkeletonRig;
+    const firstCustomRig = Array.from(studioRef.current.figures.values()).find(
+      (f) => f.isCustomModel && f.customModelGroup
+    );
+    const sourceScene =
+      studioRef.current.cachedGLTFScene ||
+      (firstCustomRig ? firstCustomRig.customModelGroup : null);
+
+    if (sourceScene) {
+      // Duplicate the authentic anatomical GLB model so 2nd skeleton is 100% full anatomical mesh!
+      rig = studioRef.current.addCustomModelFigure(sourceScene, {
+        name: `Anatomik İskelet ${nextIdx}`,
+        applyChromeMaterial: true,
+      });
+      rig.setPosition([offset, 0, 0]);
+      const envTex = studioRef.current.getEnvironmentTexture();
+      if (envTex) {
+        rig.updateMaterial(CHROME_MATERIAL_PRESETS.rainbow_chrome, envTex);
+      }
+    } else {
+      const newId = `figure_${Date.now()}`;
+      const newFigureData: SkeletonFigureData = {
+        id: newId,
+        name: `Anatomik İskelet ${nextIdx}`,
+        visible: true,
+        locked: false,
+        ikEnabled: false,
+        enforceJointLimits: true,
+        material: { ...CHROME_MATERIAL_PRESETS.rainbow_chrome },
+        pose: {
+          ...JSON.parse(JSON.stringify(DEFAULT_NEUTRAL_POSE)),
+          position: [offset, 0, 0],
+        },
+      };
+      rig = studioRef.current.addFigure(newFigureData);
+
+      // Fetch glb asynchronously to upgrade to full anatomical model
+      fetch('/models/main_skeleton.glb')
+        .then((res) => res.arrayBuffer())
+        .then(async (arrayBuffer) => {
+          if (!studioRef.current) return;
+          const { gltf } = await studioRef.current.loadGLTFFromArrayBuffer(arrayBuffer, 'main_skeleton.glb');
+          const modelGroup = gltf.scene || gltf.scenes?.[0];
+          if (modelGroup && studioRef.current) {
+            const upgraded = studioRef.current.replaceFigureWithCustomModel(newId, modelGroup, {
+              name: `Anatomik İskelet ${nextIdx}`,
+              applyChromeMaterial: true,
+            });
+            setFiguresList(Array.from(studioRef.current.figures.values()));
+            setActiveFigureId(upgraded.id);
+          }
+        })
+        .catch(() => {});
+    }
+
     setFiguresList(Array.from(studioRef.current.figures.values()));
     setActiveFigureId(rig.id);
     pushHistoryState();
@@ -274,6 +378,39 @@ export default function App() {
       setFiguresList([...Array.from(studioRef.current!.figures.values())]);
     }
   };
+
+  // Motion Capture Animation Player Handlers
+  const handlePlayAnimation = useCallback((clipId: string) => {
+    studioRef.current?.playMotionClip(clipId);
+  }, []);
+
+  const handlePauseAnimation = useCallback(() => {
+    studioRef.current?.pauseAnimation();
+  }, []);
+
+  const handleResumeAnimation = useCallback(() => {
+    studioRef.current?.resumeAnimation();
+  }, []);
+
+  const handleStopAnimation = useCallback(() => {
+    studioRef.current?.stopAnimation();
+  }, []);
+
+  const handleSeekAnimation = useCallback((time: number) => {
+    studioRef.current?.seekAnimation(time);
+  }, []);
+
+  const handleSetAnimationSpeed = useCallback((speed: number) => {
+    studioRef.current?.setAnimationSpeed(speed);
+  }, []);
+
+  const handleToggleRootMotion = useCallback((enable: boolean) => {
+    studioRef.current?.setAnimationRootMotion(enable);
+  }, []);
+
+  const handleToggleLoop = useCallback((loop: boolean) => {
+    studioRef.current?.setAnimationLoop(loop);
+  }, []);
 
   // ==========================================
   // JOINT MANIPULATION
@@ -405,6 +542,68 @@ export default function App() {
     pushHistoryState();
   };
 
+  const handleOpenLibraryModal = () => {
+    if (studioRef.current) {
+      const snap = studioRef.current.captureThumbnail(360, 360);
+      setPreviewThumbnail(snap);
+    }
+    setIsLibraryOpen(true);
+  };
+
+  const handleSaveCurrentPoseWithPhoto = (name: string) => {
+    const activeRig = studioRef.current?.getActiveFigure();
+    if (!studioRef.current || !activeRig) return;
+
+    const thumbnail = studioRef.current.captureThumbnail(360, 360);
+    const cameraState = studioRef.current.getCameraState();
+    const materialState = activeRig.currentMaterialSettings;
+    const lightingState = studioRef.current.lightingState;
+
+    const newRecord: SavedPoseRecord = {
+      id: `saved_pose_${Date.now()}`,
+      name: name.trim(),
+      thumbnail,
+      createdAt: new Date().toLocaleDateString('tr-TR', {
+        day: 'numeric',
+        month: 'short',
+        hour: '2-digit',
+        minute: '2-digit',
+      }),
+      figureId: activeRig.id,
+      pose: JSON.parse(JSON.stringify(activeRig.currentPose)),
+      camera: cameraState,
+      material: JSON.parse(JSON.stringify(materialState)),
+      lighting: JSON.parse(JSON.stringify(lightingState)),
+    };
+
+    const updated = saveCustomPoseRecord(newRecord);
+    setSavedPoses([...updated]);
+  };
+
+  const handleApplySavedPose = (record: SavedPoseRecord) => {
+    if (!studioRef.current) return;
+    const activeRig = studioRef.current.getActiveFigure();
+    if (activeRig && record.pose) {
+      activeRig.applyPose(record.pose);
+    }
+    if (record.camera) {
+      studioRef.current.setCameraState(record.camera);
+    }
+    if (record.material && activeRig) {
+      handleUpdateMaterial(record.material);
+    }
+    if (record.lighting) {
+      handleUpdateLighting(record.lighting);
+    }
+    setFiguresList(Array.from(studioRef.current.figures.values()));
+    pushHistoryState();
+  };
+
+  const handleDeleteSavedPose = (id: string) => {
+    const updated = deleteCustomPoseRecord(id);
+    setSavedPoses([...updated]);
+  };
+
   const handleGeneratePose = async (prompt: string, forceOffline: boolean) => {
     if (!studioRef.current) return;
     setIsAILoading(true);
@@ -501,7 +700,7 @@ export default function App() {
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         onOpenExport={() => setIsExportOpen(true)}
-        onOpenLibrary={() => setIsLibraryOpen(true)}
+        onOpenLibrary={handleOpenLibraryModal}
         onOpenTests={() => setIsTestsOpen(true)}
         onOpenImport={() => setIsImportOpen(true)}
       />
@@ -576,6 +775,8 @@ export default function App() {
               studioRef.current?.setTransformSpace(s);
             }}
             onSetFramingRatio={setFramingRatio}
+            onOpenLibraryModal={handleOpenLibraryModal}
+            onSelectJoint={handleSelectJoint}
           />
         </div>
 
@@ -591,6 +792,7 @@ export default function App() {
               selectedJointKey={selectedJointKey}
               lightingState={lightingState}
               activeTab={activeTab}
+              savedPoses={savedPoses}
               onUpdateJointRotation={handleUpdateJointRotation}
               onResetJoint={handleResetJoint}
               onResetLimb={handleResetLimb}
@@ -604,6 +806,46 @@ export default function App() {
               onToggleOrtho={(ortho) => studioRef.current?.toggleOrthographicCamera(ortho)}
               onSetExposure={(exp) => studioRef.current?.setExposure(exp)}
               onApplyPoseTemplate={handleApplyPoseTemplate}
+              onSaveCurrentPose={handleSaveCurrentPoseWithPhoto}
+              onApplySavedPose={handleApplySavedPose}
+              onDeleteSavedPose={handleDeleteSavedPose}
+              onOpenLibraryModal={handleOpenLibraryModal}
+              onSelectJoint={handleSelectJoint}
+              onSetBackgroundImage={(url) => {
+                if (!studioRef.current) return;
+                studioRef.current.setBackgroundImage(url);
+                setLightingState({ ...studioRef.current.lightingState });
+              }}
+              onSetBackgroundColor={(color) => {
+                if (!studioRef.current) return;
+                studioRef.current.setBackgroundColor(color);
+                setLightingState({ ...studioRef.current.lightingState });
+              }}
+              onSetFloorTexture={(url, repeat) => {
+                if (!studioRef.current) return;
+                studioRef.current.setFloorTexture(url, repeat);
+                setLightingState({ ...studioRef.current.lightingState });
+              }}
+              onSetFloorRepeat={(repeat) => {
+                if (!studioRef.current) return;
+                studioRef.current.setFloorRepeat(repeat);
+                setLightingState({ ...studioRef.current.lightingState });
+              }}
+              onSetFloorVisible={(visible) => {
+                if (!studioRef.current) return;
+                studioRef.current.setFloorVisible(visible);
+                setLightingState({ ...studioRef.current.lightingState });
+              }}
+              onSetFloorColor={(color) => {
+                if (!studioRef.current) return;
+                studioRef.current.setFloorColor(color);
+                setLightingState({ ...studioRef.current.lightingState });
+              }}
+              onSetFloorReflective={(reflective) => {
+                if (!studioRef.current) return;
+                studioRef.current.setFloorReflective(reflective);
+                setLightingState({ ...studioRef.current.lightingState });
+              }}
             />
           )}
         </div>
@@ -613,8 +855,8 @@ export default function App() {
       <SkellyPoseBar
         activeRig={activeRig}
         selectedJointKey={selectedJointKey}
-        canUndo={historyIndex > 0}
-        canRedo={historyIndex < history.length - 1}
+        canUndo={canUndo}
+        canRedo={canRedo}
         onUndo={handleUndo}
         onRedo={handleRedo}
         onApplyPoseTemplate={handleApplyPoseTemplate}
@@ -624,6 +866,15 @@ export default function App() {
         onMirrorPose={handleMirrorPose}
         onNudgeAngle={handleNudgeAngle}
         onToggleLimits={handleToggleLimits}
+        animationState={animationPlayerState}
+        onPlayAnimation={handlePlayAnimation}
+        onPauseAnimation={handlePauseAnimation}
+        onResumeAnimation={handleResumeAnimation}
+        onStopAnimation={handleStopAnimation}
+        onSeekAnimation={handleSeekAnimation}
+        onSetAnimationSpeed={handleSetAnimationSpeed}
+        onToggleRootMotion={handleToggleRootMotion}
+        onToggleLoop={handleToggleLoop}
       />
 
       {/* Modals */}
@@ -640,6 +891,11 @@ export default function App() {
         activeRig={activeRig}
         figures={figuresList}
         onApplyPoseTemplate={handleApplyPoseTemplate}
+        savedPoses={savedPoses}
+        onSaveCurrentPose={handleSaveCurrentPoseWithPhoto}
+        onApplySavedPose={handleApplySavedPose}
+        onDeleteSavedPose={handleDeleteSavedPose}
+        currentPreviewThumbnail={previewThumbnail}
       />
 
       <AcceptanceTestModal

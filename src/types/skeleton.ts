@@ -59,6 +59,22 @@ export interface FigurePose {
   scale: [number, number, number];
 }
 
+export type MultiColorMode =
+  | 'solid'
+  | 'rainbow_iridescent'
+  | 'two_tone_flip'
+  | 'gradient_ombre'
+  | 'zone_custom'
+  | 'rainbow_ribs'
+  | 'individual_bones';
+
+export interface OmbreStop {
+  id: string;
+  color: string;
+  position: number; // 0 (feet) to 1 (skull)
+  label: string;
+}
+
 export interface MaterialSettings {
   name: string;
   metalness: number;
@@ -71,6 +87,31 @@ export interface MaterialSettings {
   iridescenceIOR: number;
   iridescenceThicknessMin: number;
   iridescenceThicknessMax: number;
+  multiColorMode?: MultiColorMode;
+  secondaryColor?: string;
+  accentColor?: string;
+  zoneColors?: {
+    head?: string;
+    spine?: string;
+    pelvis?: string;
+    arms?: string;
+    legs?: string;
+  };
+  ombreStops?: OmbreStop[];
+  ombreDirection?: 'vertical' | 'sagittal' | 'radial';
+  boneColors?: Record<string, string>;
+  rainbowRibsPalette?: 'prismatic' | 'cyberpunk' | 'fire_ice' | 'toxic_neon' | 'sunset' | 'custom';
+}
+
+export interface AnimationPlayerState {
+  currentClipId: string | null;
+  clipName: string;
+  isPlaying: boolean;
+  currentTime: number;
+  duration: number;
+  playbackSpeed: number;
+  loop: boolean;
+  rootMotion: boolean;
 }
 
 export interface SkeletonFigureData {
@@ -99,16 +140,30 @@ export interface StudioLightConfig {
   castShadow: boolean;
 }
 
-export type StudioBackgroundStyle = 'black_gallery' | 'high_key' | 'deep_indigo' | 'dark_platinum' | 'studio_seamless';
+export type StudioBackgroundStyle =
+  | 'black_gallery'
+  | 'high_key'
+  | 'deep_indigo'
+  | 'dark_platinum'
+  | 'studio_seamless'
+  | 'sky_clouds'
+  | 'ocean_sea'
+  | 'sunset'
+  | 'cyberpunk'
+  | 'custom_image';
 
 export interface LightingStudioState {
   preset: string;
   backgroundStyle: StudioBackgroundStyle;
+  backgroundColor?: string;
+  backgroundImage?: string | null;
   ambientIntensity: number;
   environmentIntensity: number;
   floorVisible: boolean;
   floorReflective: boolean;
   floorColor: string;
+  floorTexture?: string | null;
+  floorRepeat?: number;
   lights: StudioLightConfig[];
 }
 
@@ -127,6 +182,18 @@ export interface StudioProject {
   figures: SkeletonFigureData[];
   lighting: LightingStudioState;
   camera: CameraState;
+}
+
+export interface SavedPoseRecord {
+  id: string;
+  name: string;
+  thumbnail: string; // Base64 data URL photo snapshot
+  createdAt: string;
+  figureId?: string;
+  pose: FigurePose;
+  camera?: CameraState;
+  material?: MaterialSettings;
+  lighting?: LightingStudioState;
 }
 
 export type GizmoMode = 'rotate' | 'translate' | 'ik_target';

@@ -38,7 +38,7 @@ CRITICAL COORDINATE AND BIOMECHANICAL AXIS RULES:
 - Angles are in DEGREES.
 - Default neutral T/A pose has all joint rotations at approximately 0.
 - SHOULDER: Raising arm forward (anterior flexion, e.g. reaching or embracing) is NEGATIVE X (e.g. -35 to -75 deg). Raising arm backward (extension) is positive X. Z raises arm outward (abduction).
-- ELBOW (lower_arm): Human elbows can ONLY bend forward (flexion towards chest/face). In our rig, positive X (0 to 140 deg) flexes the forearm FORWARD! NEVER use negative angles that would bend the elbow backward.
+- ELBOW (lower_arm): Human elbows can ONLY bend forward (flexion towards chest/face). In our rig, NEGATIVE X (-10 to -140 deg) flexes the forearm FORWARD towards chest/face (+Z)! NEVER use positive angles that would bend the elbow backward behind the body.
 - KNEES (knee_L, knee_R): Human knees bend backward (flexion). In our rig, positive X (0 to 140 deg) bends the knee backward.
 - HIPS (hip_L, hip_R): Flexing leg forward (sitting, marching) is negative X (-40 to -90 deg). Extending leg back is positive X.
 - NECK/HEAD: X tilts up/down (-X down, +X up), Y turns left/right, Z tilts laterally.
@@ -49,8 +49,8 @@ MULTILINGUAL PROMPTS (TURKISH, ENGLISH, ETC.):
   Figure 0: positioned at [-0.19, 0, 0], rotated Y: 82 deg (facing partner).
   Figure 1: positioned at [0.19, 0, 0], rotated Y: -98 deg (facing partner).
   Both rib cages touch naturally.
-  Figure 0 wraps left arm over Figure 1's upper back (shoulder_L: [-42, 18, 0], lower_arm_L: [82, 15, 0]) and right arm around Figure 1's waist (shoulder_R: [-32, -18, 2], lower_arm_R: [76, -15, 0]).
-  Figure 1 reciprocates: right arm over Figure 0's upper back (shoulder_R: [-42, -18, 0], lower_arm_R: [82, -15, 0]) and left arm around waist (shoulder_L: [-32, 18, -2], lower_arm_L: [76, 15, 0]).
+  Figure 0 wraps left arm over Figure 1's upper back (shoulder_L: [-42, 18, 0], lower_arm_L: [-82, 15, 0]) and right arm around Figure 1's waist (shoulder_R: [-32, -18, 2], lower_arm_R: [-76, -15, 0]).
+  Figure 1 reciprocates: right arm over Figure 0's upper back (shoulder_R: [-42, -18, 0], lower_arm_R: [-82, -15, 0]) and left arm around waist (shoulder_L: [-32, 18, -2], lower_arm_L: [-76, 15, 0]).
   Heads tilt gently so skulls rest comfortably near shoulders (Figure 0 head: [8, -22, 6], Figure 1 head: [8, 22, -6]).
 
 TARGETED EDITS RULE:

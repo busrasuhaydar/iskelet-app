@@ -149,6 +149,7 @@ export class SkeletonRig {
   public customBoneRotations: Map<string, EulerDegrees> = new Map();
   public selectedBoneName: string | null = null;
   public selectedBoneNode: THREE.Object3D | null = null;
+  private zoneMaterials: Map<string, THREE.MeshPhysicalMaterial> = new Map();
 
   constructor(data: SkeletonFigureData) {
     this.id = data.id;
@@ -176,6 +177,7 @@ export class SkeletonRig {
         data.material.iridescenceThicknessMax,
       ],
       envMapIntensity: data.material.envMapIntensity,
+      side: THREE.DoubleSide,
     });
 
     // Build hierarchical 3D anatomical geometry
@@ -256,7 +258,23 @@ export class SkeletonRig {
   // POSE MANAGEMENT & MIRRORING
   // ==========================================
 
-  public applyPose(pose: Partial<FigurePose>) {
+  public validateAndClampToGround(): number {
+    this.nodes.root.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(this.nodes.root);
+
+    // If lowest point penetrates below ground (min.y < -0.005)
+    // Automatically elevate skeleton so lowest bone rests firmly on ground
+    if (box.min.y < -0.005) {
+      const correction = -box.min.y + 0.002;
+      this.nodes.root.position.y += correction;
+      this.currentPose.position[1] = this.nodes.root.position.y;
+      this.nodes.root.updateMatrixWorld(true);
+      return correction;
+    }
+    return 0;
+  }
+
+  public applyPose(pose: Partial<FigurePose>, autoClampGround = true) {
     if (pose.position) this.setPosition(pose.position);
     if (pose.rotation) this.setRotation(pose.rotation);
     if (pose.scale) this.setScale(pose.scale);
@@ -270,6 +288,10 @@ export class SkeletonRig {
     }
 
     this.syncIKTargetsToLimbs();
+
+    if (autoClampGround) {
+      this.validateAndClampToGround();
+    }
   }
 
   public resetJoint(key: JointKey) {
@@ -365,7 +387,7 @@ export class SkeletonRig {
   }
 
   // ==========================================
-  // MATERIAL SETTINGS
+  // ADVANCED CHROMATIC MATERIAL SETTINGS
   // ==========================================
 
   public updateMaterial(settings: MaterialSettings, envMap?: THREE.Texture | null) {
@@ -386,15 +408,237 @@ export class SkeletonRig {
     if (envMap !== undefined) {
       this.material.envMap = envMap;
     }
+    this.material.side = THREE.DoubleSide;
     this.material.needsUpdate = true;
 
-    // If custom model is attached with chrome material, ensure meshes share material
-    if (this.customModelGroup) {
-      this.nodes.boneMeshes.forEach((mesh) => {
-        if ((mesh as any).isChromeMesh !== false) {
-          mesh.material = this.material;
+    const mode = settings.multiColorMode || 'rainbow_iridescent';
+    const isMultiZone = mode === 'zone_custom' && !!settings.zoneColors;
+    const isGradient = mode === 'gradient_ombre';
+    const isTwoTone = mode === 'two_tone_flip' && !!settings.secondaryColor;
+    const isRainbowRibs = mode === 'rainbow_ribs';
+    const isIndividualBones = mode === 'individual_bones';
+
+    // Multi-stop gradient sampler helper
+    const sampleGradientStops = (t: number): string => {
+      const stops = settings.ombreStops;
+      if (!stops || stops.length === 0) {
+        // Fallback default gradient
+        const c0 = new THREE.Color(settings.color || '#ffd700');
+        const c1 = new THREE.Color(settings.secondaryColor || '#ec4899');
+        c0.lerp(c1, 1 - t);
+        return `#${c0.getHexString()}`;
+      }
+      if (stops.length === 1) return stops[0].color;
+
+      const sorted = [...stops].sort((a, b) => a.position - b.position);
+      if (t <= sorted[0].position) return sorted[0].color;
+      if (t >= sorted[sorted.length - 1].position) return sorted[sorted.length - 1].color;
+
+      for (let i = 0; i < sorted.length - 1; i++) {
+        const s0 = sorted[i];
+        const s1 = sorted[i + 1];
+        if (t >= s0.position && t <= s1.position) {
+          const range = s1.position - s0.position || 0.001;
+          const factor = (t - s0.position) / range;
+          const c0 = new THREE.Color(s0.color);
+          const c1 = new THREE.Color(s1.color);
+          c0.lerp(c1, factor);
+          return `#${c0.getHexString()}`;
         }
-      });
+      }
+      return sorted[0].color;
+    };
+
+    const getZoneColor = (zone: string): string => {
+      if (isMultiZone && settings.zoneColors) {
+        return (settings.zoneColors as any)[zone] || settings.color;
+      }
+      if (isTwoTone) {
+        return zone === 'head' || zone === 'spine' ? settings.color : settings.secondaryColor!;
+      }
+      return settings.color;
+    };
+
+    const getOrCreateColorMat = (colorHex: string, cacheKey: string): THREE.MeshPhysicalMaterial => {
+      let zMat = this.zoneMaterials.get(cacheKey);
+      if (!zMat) {
+        zMat = this.material.clone();
+        this.zoneMaterials.set(cacheKey, zMat);
+      }
+      zMat.color.set(colorHex);
+      zMat.roughness = settings.roughness;
+      zMat.metalness = settings.metalness;
+      zMat.clearcoat = settings.clearcoat;
+      zMat.clearcoatRoughness = settings.clearcoatRoughness;
+      zMat.iridescence = settings.iridescence;
+      zMat.iridescenceIOR = settings.iridescenceIOR;
+      zMat.iridescenceThicknessRange = [
+        settings.iridescenceThicknessMin,
+        settings.iridescenceThicknessMax,
+      ];
+      zMat.envMapIntensity = settings.envMapIntensity;
+      if (envMap !== undefined) zMat.envMap = envMap;
+      zMat.side = THREE.DoubleSide;
+      zMat.vertexColors = false;
+      zMat.needsUpdate = true;
+      return zMat;
+    };
+
+    // 12-Tone Prismatic Rainbow Palette for individual ribs
+    const RIB_RAINBOW_PALETTE = [
+      '#ff0055', // Rib 1 (Top) - Radiant Ruby
+      '#ff2a00', // Rib 2 - Crimson Flame
+      '#ff6600', // Rib 3 - Sunset Tangerine
+      '#ff9900', // Rib 4 - Amber Gold
+      '#ffd700', // Rib 5 - Metallic Gold
+      '#b8e900', // Rib 6 - Electric Lime
+      '#00f088', // Rib 7 - Emerald Green
+      '#00f0ff', // Rib 8 - Cyan Laser
+      '#0088ff', // Rib 9 - Cobalt Electric
+      '#7928ca', // Rib 10 - Deep Violet
+      '#a855f7', // Rib 11 - Prismatic Purple
+      '#ff00aa', // Rib 12 (Bottom) - Magenta Neon
+    ];
+
+    const assignMeshMaterial = (mesh: THREE.Mesh) => {
+      mesh.frustumCulled = false;
+      if ((mesh as any).isChromeMesh === false || (mesh.userData as any)?.isElbowPicker) return;
+
+      const jk = (mesh.userData?.jointKey as string) || '';
+      const name = mesh.name || '';
+
+      // Mode: Individual Bones Override
+      if (isIndividualBones && settings.boneColors) {
+        const boneColor =
+          settings.boneColors[name] ||
+          settings.boneColors[jk] ||
+          settings.boneColors[mesh.userData?.boneName];
+        if (boneColor) {
+          mesh.material = getOrCreateColorMat(boneColor, `bone_${name || jk}`);
+          return;
+        }
+      }
+
+      // Mode: Rainbow Ribs (Every rib in the rib cage gets a distinct rainbow chromatic hue!)
+      if (isRainbowRibs && (name.includes('Rib') || name.includes('Sternum'))) {
+        if (name.includes('Sternum')) {
+          // Luminous platinum/cyan accent for the sternum
+          mesh.material = getOrCreateColorMat('#00f0ff', 'rib_sternum_cyan');
+          return;
+        }
+
+        // Apply vertex colors to Rib_Cage geometry if not already done
+        const geom = mesh.geometry;
+        if (geom && geom.attributes.position) {
+          const pos = geom.attributes.position;
+          const count = pos.count;
+          let colors = geom.attributes.color ? (geom.attributes.color.array as Float32Array) : null;
+
+          if (!colors || colors.length !== count * 3) {
+            colors = new Float32Array(count * 3);
+          }
+
+          // Compute Y range of the ribs (typically y = 1.25 to 1.55)
+          const minY = 1.25;
+          const maxY = 1.55;
+          const range = maxY - minY || 0.3;
+
+          for (let i = 0; i < count; i++) {
+            const y = pos.getY(i);
+            const normY = Math.max(0, Math.min(1, (y - minY) / range));
+            // Invert so Rib 1 (top) gets index 0 and Rib 12 (bottom) gets index 11
+            const paletteIdx = Math.min(
+              RIB_RAINBOW_PALETTE.length - 1,
+              Math.floor((1 - normY) * RIB_RAINBOW_PALETTE.length)
+            );
+            const c = new THREE.Color(RIB_RAINBOW_PALETTE[paletteIdx]);
+            colors[i * 3] = c.r;
+            colors[i * 3 + 1] = c.g;
+            colors[i * 3 + 2] = c.b;
+          }
+
+          geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+          let ribMat = this.zoneMaterials.get('rainbow_ribs_mat');
+          if (!ribMat) {
+            ribMat = this.material.clone();
+            this.zoneMaterials.set('rainbow_ribs_mat', ribMat);
+          }
+          ribMat.vertexColors = true;
+          ribMat.color.set('#ffffff');
+          ribMat.roughness = Math.min(settings.roughness, 0.15);
+          ribMat.metalness = Math.max(settings.metalness, 0.95);
+          ribMat.clearcoat = 1.0;
+          ribMat.iridescence = 0.8;
+          ribMat.envMapIntensity = settings.envMapIntensity;
+          if (envMap !== undefined) ribMat.envMap = envMap;
+          ribMat.needsUpdate = true;
+
+          mesh.material = ribMat;
+          return;
+        }
+      }
+
+      // Mode: Gradient Ombre (Smooth multi-stop transition from head to toes)
+      if (isGradient) {
+        let heightNormalized = 0.5;
+
+        if (jk === 'head' || jk === 'jaw' || name.includes('Skull') || name.includes('Teeth') || name.includes('Mandible')) {
+          heightNormalized = 0.98;
+        } else if (jk === 'spine_cervical' || name.includes('Cervical')) {
+          heightNormalized = 0.86;
+        } else if (jk === 'spine_thoracic' || name.includes('Rib') || name.includes('Sternum')) {
+          heightNormalized = 0.74;
+        } else if (name.includes('Clavicle') || name.includes('Scapula')) {
+          heightNormalized = 0.80;
+        } else if (jk.includes('shoulder') || name.includes('Humerus')) {
+          heightNormalized = 0.70;
+        } else if (jk === 'spine_lumbar') {
+          heightNormalized = 0.62;
+        } else if (jk.includes('lower_arm') || name.includes('Ulna') || name.includes('Radius')) {
+          heightNormalized = 0.55;
+        } else if (jk === 'pelvis' || name.includes('Pelvis') || name.includes('Sacrum')) {
+          heightNormalized = 0.50;
+        } else if (jk.includes('wrist') || name.includes('Hand')) {
+          heightNormalized = 0.42;
+        } else if (jk.includes('hip') || name.includes('Femur')) {
+          heightNormalized = 0.38;
+        } else if (name.includes('Patella') || jk.includes('knee')) {
+          heightNormalized = 0.25;
+        } else if (name.includes('Tibia') || name.includes('Fibula')) {
+          heightNormalized = 0.16;
+        } else if (jk.includes('ankle') || jk.includes('toes') || name.includes('Foot')) {
+          heightNormalized = 0.04;
+        }
+
+        const ombreColor = sampleGradientStops(heightNormalized);
+        mesh.material = getOrCreateColorMat(ombreColor, `ombre_${heightNormalized.toFixed(2)}`);
+        return;
+      }
+
+      // Mode: Zone Custom or Two Tone
+      if (isMultiZone || isTwoTone) {
+        let zone = 'spine';
+        if (jk === 'head' || jk === 'jaw' || name.includes('Skull') || name.includes('Teeth') || name.includes('Mandible') || name.includes('Cervical')) {
+          zone = 'head';
+        } else if (jk === 'pelvis' || name.includes('Pelvis') || name.includes('Sacrum')) {
+          zone = 'pelvis';
+        } else if (jk.includes('arm') || jk.includes('shoulder') || jk.includes('wrist') || jk.includes('clavicle') || name.includes('Forearm') || name.includes('Humerus') || name.includes('Hand')) {
+          zone = 'arms';
+        } else if (jk.includes('leg') || jk.includes('hip') || jk.includes('knee') || jk.includes('ankle') || name.includes('Femur') || name.includes('Tibia') || name.includes('Fibula') || name.includes('Foot')) {
+          zone = 'legs';
+        }
+
+        mesh.material = getOrCreateColorMat(getZoneColor(zone), `zone_${zone}`);
+        return;
+      }
+
+      // Solid or default base chrome
+      mesh.material = this.material;
+    };
+
+    if (this.nodes.boneMeshes) {
+      this.nodes.boneMeshes.forEach(assignMeshMaterial);
     }
   }
 
@@ -668,7 +912,7 @@ export class SkeletonRig {
 
   public dispose() {
     this.material.dispose();
-    this.nodes.boneMeshes.forEach((mesh) => {
+    this.nodes?.boneMeshes?.forEach((mesh) => {
       mesh.geometry?.dispose();
     });
     if (this.customModelGroup) {
